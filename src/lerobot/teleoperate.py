@@ -105,28 +105,44 @@ def teleop_loop(
     display_len = max(len(key) for key in robot.action_features)
     start = time.perf_counter()
     while True:
-        loop_start = time.perf_counter()
-        action = teleop.get_action()
-        if display_data:
-            observation = robot.get_observation()
-            log_rerun_data(observation, action)
+        try:
+            loop_start = time.perf_counter()
+            action = teleop.get_action()
+            
+            if display_data:
+                try:
+                    observation = robot.get_observation()
+                    log_rerun_data(observation, action)
+                except Exception as e:
+                    logger.warning(f"Error getting observation: {e}. Continuing with action only.")
+                    # Continue without observation if there's an error
 
-        robot.send_action(action)
-        dt_s = time.perf_counter() - loop_start
-        busy_wait(1 / fps - dt_s)
+            robot.send_action(action)
+            
+            dt_s = time.perf_counter() - loop_start
+            busy_wait(1 / fps - dt_s)
 
-        loop_s = time.perf_counter() - loop_start
+            loop_s = time.perf_counter() - loop_start
 
-        print("\n" + "-" * (display_len + 10))
-        print(f"{'NAME':<{display_len}} | {'NORM':>7}")
-        for motor, value in action.items():
-            print(f"{motor:<{display_len}} | {value:>7.2f}")
-        print(f"\ntime: {loop_s * 1e3:.2f}ms ({1 / loop_s:.0f} Hz)")
+            print("\n" + "-" * (display_len + 10))
+            print(f"{'NAME':<{display_len}} | {'NORM':>7}")
+            for motor, value in action.items():
+                print(f"{motor:<{display_len}} | {value:>7.2f}")
+            print(f"\ntime: {loop_s * 1e3:.2f}ms ({1 / loop_s:.0f} Hz)")
 
-        if duration is not None and time.perf_counter() - start >= duration:
+            if duration is not None and time.perf_counter() - start >= duration:
+                return
+
+            move_cursor_up(len(action) + 5)
+            
+        except KeyboardInterrupt:
+            logger.info("Teleoperation interrupted by user")
             return
-
-        move_cursor_up(len(action) + 5)
+        except Exception as e:
+            logger.warning(f"Error in teleop loop: {e}. Continuing...")
+            # Wait a bit before retrying, but don't give up
+            time.sleep(0.1)
+            continue
 
 
 @draccus.wrap()

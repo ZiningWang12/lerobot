@@ -13,7 +13,8 @@ resolutions = [
 ]
 
 # 相机设备路径
-camera_id = "/dev/video4"
+# camera_id = "/dev/video4" # hand in eye cam
+camera_id = "/dev/video6" # fixed global cam
 
 # 输出目录
 output_dir = "outputs/test_opencv_frames"

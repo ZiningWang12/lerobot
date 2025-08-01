@@ -55,6 +55,138 @@ python examples/2_evaluate_pretrained_policy.py
 python examples/3_train_policy.py
 ```
 
+### 6. 实时TeleOp调试界面
+
+#### 重要参数说明
+- **`--fps=30`**: 控制循环频率，每秒执行30次控制循环
+  - 30fps: 平衡性能和稳定性（推荐）
+  - 60fps: 更高响应速度，但增加系统负载
+  - 10-15fps: 适合调试或资源有限时
+- **`--display_data=true`**: 启用实时数据可视化（Rerun界面）
+- **`--dataset.repo_id`**: 数据集存储的HuggingFace仓库ID
+- **`--dataset.num_episodes`**: 录制的任务次数
+- **`--dataset.episode_time_s`**: 每个任务的录制时长（秒）
+
+#### 带双摄像头的TeleOp调试（HandEye + Global）
+```bash
+# 双臂+双摄像头实时调试（HandEye + Global）
+python -m lerobot.teleoperate \
+    --robot.type=so101_follower \
+    --robot.port=/dev/ttyACM1 \
+    --robot.id=znw_arm_f1 \
+    --robot.cameras='{"handeye": {"type": "opencv", "index_or_path": "/dev/video4", "width": 800, "height": 600, "fps": 25}, "global": {"type": "opencv", "index_or_path": "/dev/video6", "width": 800, "height": 600, "fps": 25}}' \
+    --teleop.type=so101_leader \
+    --teleop.port=/dev/ttyACM0 \
+    --teleop.id=znw_arm_l1 \
+    --display_data=true \
+    --fps=60
+```
+
+#### 电机校准GUI界面
+```bash
+# 电机校准和调试界面
+python -m lerobot.calibrate \
+    --robot.type=so101_follower \
+    --robot.port=/dev/ttyACM1 \
+    --robot.id=znw_arm_f1
+
+
+python -m lerobot.calibrate \
+    --teleop.type=so101_leader \
+    --teleop.port=/dev/ttyACM0 \
+    --teleop.id=znw_arm_l1
+```
+
+#### 摄像头测试
+```bash
+# 测试HandEye摄像头连接和性能
+python tests/cameras/test_real_opencv.py
+
+#### 舵机参数调节（解决jittering问题）
+```bash
+# 交互式调节舵机PID和Deadband参数
+python motor_tuning_script.py
+```
+
+#### 数据录制（双摄像头）
+```bash
+# 录制双臂+双摄像头数据集（HandEye + Global）
+python -m lerobot.record \
+    --robot.type=so101_follower \
+    --robot.port=/dev/ttyACM1 \
+    --robot.id=znw_arm_f1 \
+    --robot.cameras='{"handeye": {"type": "opencv", "index_or_path": "/dev/video4", "width": 800, "height": 600, "fps": 25}, "global": {"type": "opencv", "index_or_path": "/dev/video6", "width": 800, "height": 600, "fps": 25}}' \
+    --teleop.type=so101_leader \
+    --teleop.port=/dev/ttyACM0 \
+    --teleop.id=znw_arm_l1 \
+    --dataset.repo_id=wzn12/teleop_ring \
+    --dataset.single_task="pick ring" \
+    --dataset.num_episodes=20 \
+    --dataset.episode_time_s=20 \
+    --dataset.reset_time_s=15 \
+    --dataset.push_to_hub=true \
+    --dataset.private=true \
+    --display_data=true 
+```
+
+#### 数据回放（查看录制的数据,会启动机器人）
+```bash
+# 回放录制的数据集
+python -m lerobot.replay \
+    --robot.type=so101_follower \
+    --robot.port=/dev/ttyACM1 \
+    --robot.id=znw_arm_f1 \
+    --dataset.repo_id=your_username/your_dataset_name \
+    --dataset.episode=0
+```
+
+#### 模型inference
+```bash
+python -m lerobot.record \
+    --robot.type=so101_follower \
+    --robot.port=/dev/ttyACM1 \
+    --robot.cameras='{"handeye": {"type": "opencv", "index_or_path": "/dev/video4", "width": 800, "height": 600, "fps": 25}, "global": {"type": "opencv", "index_or_path": "/dev/video6", "width": 800, "height": 600, "fps": 25}}' \
+    --robot.id=znw_arm_l1 \
+    --dataset.repo_id=wzn12/ring-smolVLA-test \
+    --dataset.num_episodes=2 \
+    --dataset.single_task="pick up the black ring" \
+    --dataset.episode_time_s=60 \
+    # <- Teleop optional if you want to teleoperate to record or in between episodes with a policy \
+    # --teleop.type=so100_leader \
+    # --teleop.port=/dev/tty.usbmodem58760431551 \
+    # --teleop.id=blue \
+    # <- Policy optional if you want to record with a policy \
+    --policy.path=lerobot/smolvla_base \
+    --policy.device=cuda \
+    --policy.use_amp=true \
+    --display_data=true
+```
+
+### 7. 设备端口配置
+
+#### 当前设备配置
+- **Follower Arm**: `/dev/ttyACM1` (ID: znw_arm_f1)
+- **Leader Arm**: `/dev/ttyACM0` (ID: znw_arm_l1)  
+- **HandEye Camera**: `/dev/video4` (800x600@25fps)
+- **Global Camera**: `/dev/video6` (800x600@25fps)
+
+#### 端口权限设置
+```bash
+# 设置串口权限（每次重启后需要重新设置）
+sudo chmod 666 /dev/ttyACM0
+sudo chmod 666 /dev/ttyACM1
+
+```
+
+#### 查找可用端口
+```bash
+# 查找可用的串口设备
+python -m lerobot.find_port
+
+# 查找可用的摄像头设备
+ls /dev/video*
+```
+
 ## 环境信息
 
 ### 已安装的关键组件
@@ -73,12 +205,6 @@ python examples/3_train_policy.py
 - PI0 (Policy Iteration Zero)
 - SmolVLA (Small Vision-Language-Action)
 - SAC (Soft Actor-Critic)
-
-### 支持的机器人平台
-- **仿真**: pusht, aloha, xarm
-- **真机**: koch, aloha, so100, so101, stretch3, viperx
-- **摄像头**: opencv, intelrealsense
-- **电机**: dynamixel, feetech
 
 ## 故障排除
 

@@ -19,6 +19,8 @@ import time
 from functools import cached_property
 from typing import Any
 
+import numpy as np
+
 from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from lerobot.motors import Motor, MotorCalibration, MotorNormMode
@@ -161,12 +163,27 @@ class SO101Follower(Robot):
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
 
-        # Capture images from cameras
+        # Capture images from cameras with error handling
         for cam_key, cam in self.cameras.items():
-            start = time.perf_counter()
-            obs_dict[cam_key] = cam.async_read()
-            dt_ms = (time.perf_counter() - start) * 1e3
-            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+            try:
+                start = time.perf_counter()
+                # Use shorter timeout for better performance
+                obs_dict[cam_key] = cam.async_read(timeout_ms=50)  # 50ms timeout
+                dt_ms = (time.perf_counter() - start) * 1e3
+                logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+            except (TimeoutError, RuntimeError, DeviceNotConnectedError) as e:
+                # Quick fallback without logging to avoid spam
+                # Try to use the last known frame if available
+                if hasattr(cam, 'latest_frame') and cam.latest_frame is not None:
+                    obs_dict[cam_key] = cam.latest_frame.copy()
+                else:
+                    # Create a placeholder frame (black image with same dimensions)
+                    if hasattr(cam, 'config'):
+                        height, width = cam.config.height, cam.config.width
+                        obs_dict[cam_key] = np.zeros((height, width, 3), dtype=np.uint8)
+                    else:
+                        # Fallback to a default size
+                        obs_dict[cam_key] = np.zeros((600, 800, 3), dtype=np.uint8)
 
         return obs_dict
 
