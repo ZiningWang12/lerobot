@@ -14,10 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import os
 import time
 from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
+
+# Set tokenizers parallelism to false to avoid warnings when using multiprocessing
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch
 from termcolor import colored

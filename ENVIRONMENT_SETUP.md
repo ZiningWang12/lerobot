@@ -140,26 +140,68 @@ python -m lerobot.replay \
     --dataset.episode=0
 ```
 
-#### 模型inference
+
+#### 模型training
 ```bash
+export HF_HUB_OFFLINE=1
+python -m lerobot.scripts.train \
+    --policy.path=lerobot/smolvla_base \
+    --dataset.repo_id=wzn12/teleop_ring \
+    --batch_size=56 \
+    --steps=8000 \
+    --policy.repo_id=wzn12/my_smolvla_model \
+    --policy.device=cuda \
+    --policy.use_amp=false \
+    --wandb.enable=true \
+    --save_freq=2000 \
+    --num_workers=8  # 从4增加到8
+
+```
+
+#### 模型inference（实时机器人控制）
+```bash
+export HF_HUB_OFFLINE=1
 python -m lerobot.record \
     --robot.type=so101_follower \
     --robot.port=/dev/ttyACM1 \
+    --robot.id=znw_arm_f1 \
     --robot.cameras='{"handeye": {"type": "opencv", "index_or_path": "/dev/video4", "width": 800, "height": 600, "fps": 25}, "global": {"type": "opencv", "index_or_path": "/dev/video6", "width": 800, "height": 600, "fps": 25}}' \
-    --robot.id=znw_arm_l1 \
-    --dataset.repo_id=wzn12/ring-smolVLA-test \
-    --dataset.num_episodes=2 \
     --dataset.single_task="pick up the black ring" \
-    --dataset.episode_time_s=60 \
-    # <- Teleop optional if you want to teleoperate to record or in between episodes with a policy \
-    # --teleop.type=so100_leader \
-    # --teleop.port=/dev/tty.usbmodem58760431551 \
-    # --teleop.id=blue \
-    # <- Policy optional if you want to record with a policy \
-    --policy.path=lerobot/smolvla_base \
+    --dataset.episode_time_s=100 \
+    --dataset.num_episodes=10 \
+    --policy.path=outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model \
     --policy.device=cuda \
-    --policy.use_amp=true \
-    --display_data=true
+    --policy.use_amp=false \
+    --display_data=true \
+    --dataset.repo_id=wzn12/eval_ring-smolVLA_test
+```
+
+#### 模型推理可视化（在录制数据上）
+```bash
+# 在录制的数据集上可视化模型推理效果（对比预测动作与真实动作）
+python visualize_policy_inference.py \
+    --policy-path outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model \
+    --dataset-repo-id wzn12/teleop_ring \
+    --episode-index 0 \
+    --device cuda
+
+# 可视化多个回合并保存结果
+python visualize_policy_inference.py \
+    --policy-path outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model \
+    --dataset-repo-id wzn12/teleop_ring \
+    --episode-index 5 \
+    --device cuda \
+    --save \
+    --output-dir visualization_outputs
+
+# 脚本功能说明：
+# - 学习record.py的策略加载和推理方式
+# - 正确处理数据格式转换（CHW↔HWC, [0,1]↔[0,255]）
+# - 可视化双摄像头图像（HandEye + Global）
+# - 对比预测动作与真实动作
+# - 计算并显示动作误差（MAE、MSE）
+# - 显示关节状态和其他元数据
+# - 支持Rerun实时可视化界面
 ```
 
 ### 7. 设备端口配置
@@ -182,6 +224,7 @@ sudo chmod 666 /dev/ttyACM1
 ```bash
 # 查找可用的串口设备
 python -m lerobot.find_port
+python -m lerobot.find_cameras opencv 
 
 # 查找可用的摄像头设备
 ls /dev/video*
