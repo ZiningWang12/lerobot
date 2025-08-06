@@ -1,0 +1,27 @@
+Frame-Level Labeling Summary
+==================================================
+
+Episode 0: 55 success, 130 failure, 130 ignore
+Episode 1: 51 success, 145 failure, 119 ignore
+Episode 2: 32 success, 203 failure, 83 ignore
+Episode 3: 58 success, 123 failure, 133 ignore
+Episode 4: 40 success, 125 failure, 142 ignore
+Episode 5: 47 success, 153 failure, 112 ignore
+Episode 6: 54 success, 133 failure, 128 ignore
+Episode 7: 41 success, 179 failure, 96 ignore
+Episode 8: 36 success, 154 failure, 127 ignore
+Episode 9: 31 success, 197 failure, 87 ignore
+Episode 10: 46 success, 129 failure, 137 ignore
+Episode 11: 48 success, 119 failure, 143 ignore
+Episode 12: 55 success, 127 failure, 130 ignore
+Episode 13: 32 success, 115 failure, 168 ignore
+Episode 14: 46 success, 165 failure, 103 ignore
+Episode 15: 29 success, 110 failure, 172 ignore
+Episode 16: 50 success, 122 failure, 140 ignore
+Episode 17: 40 success, 150 failure, 119 ignore
+Episode 18: 58 success, 149 failure, 109 ignore
+Episode 19: 49 success, 163 failure, 99 ignore
+
+TOTAL: 898 success, 2891 failure, 2477 ignore
+Success rate: 14.3%
+Total frames: 6266

@@ -1,0 +1,56 @@
+{
+  "policy": {
+    "type": "smolvla_reward_classifier",
+    "vlm_model_name": "HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
+    "load_vlm_weights": true,
+    "freeze_vlm": true,
+    "task_description": "Is the robot successfully completing the ring manipulation task?",
+    "use_task_description": true,
+    "num_classes": 2,
+    "use_ignore_label": true,
+    "ignore_label_value": -1,
+    "hidden_dim": 512,
+    "dropout_rate": 0.1,
+    "learning_rate": 1e-4,
+    "weight_decay": 0.01,
+    "device": "cuda",
+    "input_features": {
+      "observation.images.front": {
+        "type": "VISUAL", 
+        "shape": [3, 224, 224]
+      },
+      "observation.images.side": {
+        "type": "VISUAL",
+        "shape": [3, 224, 224]
+      }
+    },
+    "output_features": {
+      "next.reward": {
+        "type": "CONTINUOUS",
+        "shape": [1]
+      }
+    }
+  },
+  "dataset": {
+    "type": "lerobot",
+    "repo_id": "wzn12/teleop_ring_labeled",
+    "data_dir": null,
+    "splits": {
+      "train": 0.8,
+      "test": 0.2
+    }
+  },
+  "training": {
+    "batch_size": 16,
+    "num_epochs": 50,
+    "eval_freq": 5,
+    "save_freq": 10,
+    "gradient_accumulation_steps": 1,
+    "max_grad_norm": 1.0
+  },
+  "wandb": {
+    "enable": true,
+    "project": "lerobot_ring_reward_classifier",
+    "name": "smolvla_ring_reward_classifier"
+  }
+}
