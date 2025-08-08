@@ -1,0 +1,65 @@
+{
+  "job_name": "resnet10_ring_128",
+  "dataset": {
+    "repo_id": "wzn12/teleop_ring_labeled",
+    "root": null,
+    "use_imagenet_stats": true,
+    "image_transforms": {
+      "enable": true,
+      "max_num_transforms": 1,
+      "random_order": false,
+      "tfs": {
+        "resize": {
+          "weight": 1.0,
+          "type": "Resize",
+          "kwargs": {"size": [128, 128], "antialias": true}
+        }
+      }
+    }
+  },
+  "policy": {
+    "type": "reward_classifier",
+    "model_name": "helper2424/resnet10",
+    "model_type": "cnn",
+    "num_classes": 2,
+    "num_cameras": 2,
+    "hidden_dim": 256,
+    "latent_dim": 256,
+    "image_embedding_pooling_dim": 8,
+    "dropout_rate": 0.1,
+    "learning_rate": 1e-4,
+    "weight_decay": 0.01,
+    "grad_clip_norm": 1.0,
+    "device": "cuda",
+    "use_amp": true,
+    "repo_id": "wzn12/reward_classifier_resnet10_ring",
+    "input_features": {
+      "observation.image.handeye": {
+        "type": "VISUAL",
+        "shape": [3, 128, 128]
+      },
+      "observation.image.global": {
+        "type": "VISUAL",
+        "shape": [3, 128, 128]
+      }
+    },
+    "output_features": {
+      "next.reward": {
+        "type": "REWARD",
+        "shape": [1]
+      }
+    }
+  },
+  "output_dir": "outputs/reward_classifier_resnet10_ring_128_v2",
+  "batch_size": 16,
+  "steps": 6000,
+  "save_freq": 2000,
+  "eval_freq": 500,
+  "log_freq": 200,
+  "num_workers": 4,
+  "wandb": {
+    "enable": true,
+    "project": "lerobot_ring_reward_classifier",
+    "notes": "ResNet10 reward classifier on teleop ring labeled dataset (128x128)"
+  }
+}

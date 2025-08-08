@@ -1,0 +1,95 @@
+{
+  "job_name": "hilserl_smolvla_ring",
+  "env": {
+    "type": "gym_manipulator",
+    "robot": {
+      "type": "so101_follower",
+      "port": "/dev/ttyACM1",
+      "id": "znw_arm_f1"
+    },
+    "teleop": {
+      "type": "so101_leader",
+      "port": "/dev/ttyACM0", 
+      "id": "znw_arm_l1",
+      "end_effector_bounds": {
+        "max": [0.24, 0.20, 0.10],
+        "min": [0.16, -0.08, 0.03]
+      }
+    },
+    "cameras": {
+      "handeye": {
+        "type": "opencv",
+        "index_or_path": "/dev/video4",
+        "width": 800,
+        "height": 600,
+        "fps": 25
+      },
+      "global": {
+        "type": "opencv",
+        "index_or_path": "/dev/video6", 
+        "width": 800,
+        "height": 600,
+        "fps": 25
+      }
+    },
+    "wrapper": {
+      "crop_params_dict": {
+        "observation.images.handeye": [200, 600, 150, 550],
+        "observation.images.global": [150, 650, 200, 600]
+      }
+    },
+    "fps": 10,
+    "name": "real_robot",
+    "mode": "train",
+    "repo_id": "wzn12/hilserl_ring_training",
+    "task": "pick up the black ring",
+    "num_episodes": 100,
+    "device": "cuda",
+    "push_to_hub": true,
+    "reward_classifier_pretrained_path": "outputs/reward_classifier_resnet10_ring_224_v2/checkpoints/006000/pretrained_model",
+    "number_of_steps_after_success": 15
+  },
+  "policy": {
+    "type": "smolvla",
+    "pretrained_path": "outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model",
+    "device": "cuda",
+    "use_amp": false,
+    "repo_id": "wzn12/hilserl_smolvla_ring",
+    "input_features": {
+      "observation.images.handeye": {"type": "VISUAL", "shape": [3, 224, 224]},
+      "observation.images.global": {"type": "VISUAL", "shape": [3, 224, 224]},
+      "observation.state": {"type": "STATE", "shape": [14]},
+      "task": {"type": "LANGUAGE", "shape": [1]}
+    },
+    "output_features": {
+      "action": {"type": "ACTION", "shape": [14]}
+    },
+    "resize_imgs_with_padding": [224, 224],
+    "freeze_vision_encoder": true,
+    "train_expert_only": true,
+    "train_state_proj": true,
+    "optimizer_lr": 1e-4,
+    "scheduler_warmup_steps": 1000,
+    "scheduler_decay_steps": 50000,
+    "scheduler_decay_lr": 2.5e-6,
+    "actor_learner_config": {
+      "learner_host": "localhost",
+      "learner_port": 50051,
+      "policy_parameters_push_frequency": 100,
+      "queue_get_timeout": 1.0
+    }
+  },
+  "output_dir": "outputs/train/hilserl_smolvla_ring",
+  "batch_size": 32,
+  "steps": 100000,
+  "save_freq": 5000,
+  "log_freq": 100,
+  "num_workers": 4,
+  "seed": 1000,
+  "save_checkpoint": true,
+  "wandb": {
+    "enable": true,
+    "project": "lerobot_hilserl_ring",
+    "notes": "HILSERL training with smolVLA for ring picking task"
+  }
+} 

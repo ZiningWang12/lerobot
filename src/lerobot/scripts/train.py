@@ -33,6 +33,8 @@ from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
 from lerobot.datasets.utils import cycle
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.transforms import ImageTransforms
 from lerobot.envs.factory import make_env
 from lerobot.optim.factory import make_optimizer_and_scheduler
 from lerobot.policies.factory import make_policy
@@ -131,6 +133,34 @@ def train(cfg: TrainPipelineConfig):
     logging.info("Creating dataset")
     dataset = make_dataset(cfg)
 
+    # Create train/validation split by episodes (80/20, val = last episodes)
+    total_eps = dataset.num_episodes
+    val_eps_count = max(1, int(0.2 * total_eps))
+    all_eps = list(range(total_eps))
+    train_eps = all_eps[:-val_eps_count]
+    val_eps = all_eps[-val_eps_count:]
+
+    image_transforms = (
+        ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
+    )
+
+    train_dataset = LeRobotDataset(
+        cfg.dataset.repo_id,
+        root=cfg.dataset.root,
+        episodes=train_eps,
+        image_transforms=image_transforms,
+        revision=cfg.dataset.revision,
+        video_backend=cfg.dataset.video_backend,
+    )
+    val_dataset = LeRobotDataset(
+        cfg.dataset.repo_id,
+        root=cfg.dataset.root,
+        episodes=val_eps,
+        image_transforms=image_transforms,
+        revision=cfg.dataset.revision,
+        video_backend=cfg.dataset.video_backend,
+    )
+
     # Create environment used for evaluating checkpoints during training on simulation data.
     # On real-world data, no need to create an environment as evaluations are done outside train.py,
     # using the eval.py instead, with gym_dora environment and dora-rs.
@@ -142,7 +172,7 @@ def train(cfg: TrainPipelineConfig):
     logging.info("Creating policy")
     policy = make_policy(
         cfg=cfg.policy,
-        ds_meta=dataset.meta,
+        ds_meta=train_dataset.meta,
     )
 
     logging.info("Creating optimizer and scheduler")
@@ -161,8 +191,10 @@ def train(cfg: TrainPipelineConfig):
     if cfg.env is not None:
         logging.info(f"{cfg.env.task=}")
     logging.info(f"{cfg.steps=} ({format_big_number(cfg.steps)})")
-    logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
-    logging.info(f"{dataset.num_episodes=}")
+    logging.info(f"train_frames={train_dataset.num_frames} ({format_big_number(train_dataset.num_frames)})")
+    logging.info(f"val_frames={val_dataset.num_frames} ({format_big_number(val_dataset.num_frames)})")
+    logging.info(f"train_episodes={train_dataset.num_episodes}")
+    logging.info(f"val_episodes={val_dataset.num_episodes}")
     logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
     logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
@@ -170,7 +202,7 @@ def train(cfg: TrainPipelineConfig):
     if hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False
         sampler = EpisodeAwareSampler(
-            dataset.episode_data_index,
+            train_dataset.episode_data_index,
             drop_n_last_frames=cfg.policy.drop_n_last_frames,
             shuffle=True,
         )
@@ -179,7 +211,7 @@ def train(cfg: TrainPipelineConfig):
         sampler = None
 
     dataloader = torch.utils.data.DataLoader(
-        dataset,
+        train_dataset,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
         shuffle=shuffle,
@@ -188,6 +220,16 @@ def train(cfg: TrainPipelineConfig):
         drop_last=False,
     )
     dl_iter = cycle(dataloader)
+
+    # Validation dataloader (no shuffle)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        num_workers=max(1, cfg.num_workers // 2),
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        pin_memory=device.type == "cuda",
+        drop_last=False,
+    )
 
     policy.train()
 
@@ -240,6 +282,28 @@ def train(cfg: TrainPipelineConfig):
                     wandb_log_dict.update(output_dict)
                 wandb_logger.log_dict(wandb_log_dict, step)
             train_tracker.reset_averages()
+
+        # Validation pass
+        if is_eval_step:
+            policy.eval()
+            val_loss_sum = 0.0
+            val_acc_sum = 0.0
+            val_count = 0
+            with torch.no_grad():
+                for val_batch in val_loader:
+                    for key in val_batch:
+                        if isinstance(val_batch[key], torch.Tensor):
+                            val_batch[key] = val_batch[key].to(device, non_blocking=device.type == "cuda")
+                    loss, out = policy.forward(val_batch)
+                    val_loss_sum += loss.item()
+                    if out and "accuracy" in out:
+                        val_acc_sum += out["accuracy"]
+                    val_count += 1
+            val_loss = val_loss_sum / max(1, val_count)
+            val_acc = val_acc_sum / max(1, val_count)
+            logging.info(f"Validation at step {step}: val_loss={val_loss:.3f}, val_accuracy={val_acc:.2f}")
+            if wandb_logger:
+                wandb_logger.log_dict({"val_loss": val_loss, "val_accuracy": val_acc}, step, mode="eval")
 
         if cfg.save_checkpoint and is_saving_step:
             logging.info(f"Checkpoint policy after step {step}")

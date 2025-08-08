@@ -63,37 +63,65 @@ class SpatialLearnedEmbeddings(nn.Module):
         self.channel = channel
         self.num_features = num_features
 
-        self.kernel = nn.Parameter(torch.empty(channel, height, width, num_features))
-
+        # Learn a per-channel spatial mixing from HxW -> num_features
+        self.kernel = nn.Parameter(torch.empty(channel, height * width, num_features))
         nn.init.kaiming_normal_(self.kernel, mode="fan_in", nonlinearity="linear")
 
-    def forward(self, features):
+    def forward(self, features: torch.Tensor):
         """
-        Forward pass for spatial embedding
+        Forward pass for spatial embedding with dynamic shape support.
 
-        Args:
-            features: Input tensor of shape [B, H, W, C] or [H, W, C] if no batch
-        Returns:
-            Output tensor of shape [B, C*F] or [C*F] if no batch
+        Accepts CNN feature maps of shape [B, C, H, W] or [C, H, W]. Also
+        supports [B, H, W, C] or [H, W, C]. Internally resizes spatial dims
+        to (self.height, self.width) if needed so the learned kernel matches.
         """
 
-        features = features.last_hidden_state
+        # Handle potential transformer-like outputs holding last_hidden_state
+        if hasattr(features, "last_hidden_state"):
+            features = features.last_hidden_state
 
-        original_shape = features.shape
-        if features.dim() == 3:
-            features = features.unsqueeze(0)  # Add batch dim
+        original_ndim = features.dim()
 
-        features_expanded = features.unsqueeze(-1)  # [B, H, W, C, 1]
-        kernel_expanded = self.kernel.unsqueeze(0)  # [1, H, W, C, F]
+        # Normalize to [B, H, W, C]
+        if original_ndim == 4 and features.shape[1] != self.channel:
+            # Assume [B, H, W, C]
+            bhwc = features
+        elif original_ndim == 4:
+            # Assume [B, C, H, W] -> [B, H, W, C]
+            bhwc = features.permute(0, 2, 3, 1).contiguous()
+        elif original_ndim == 3 and features.shape[0] == self.channel:
+            # [C, H, W] -> [1, H, W, C]
+            bhwc = features.permute(1, 2, 0).unsqueeze(0).contiguous()
+        elif original_ndim == 3:
+            # [H, W, C] -> [1, H, W, C]
+            bhwc = features.unsqueeze(0)
+        else:
+            raise ValueError(f"Unsupported feature shape: {tuple(features.shape)}")
 
-        # Element-wise multiplication and spatial reduction
-        output = (features_expanded * kernel_expanded).sum(dim=(2, 3))  # Sum H,W
+        B, H, W, C = bhwc.shape
 
-        # Reshape to combine channel and feature dimensions
-        output = output.view(output.size(0), -1)  # [B, C*F]
+        # Resize spatial dims to expected (self.height, self.width) if needed
+        if (H, W) != (self.height, self.width):
+            # Convert to NCHW for interpolation then back to NHWC
+            nchw = bhwc.permute(0, 3, 1, 2).contiguous()
+            nchw = nn.functional.interpolate(
+                nchw, size=(self.height, self.width), mode="bilinear", align_corners=False
+            )
+            bhwc = nchw.permute(0, 2, 3, 1).contiguous()
 
-        # Remove batch dim
-        if len(original_shape) == 3:
+        # Convert to NCHW for efficient compute
+        nchw = bhwc.permute(0, 3, 1, 2).contiguous()  # [B, C, H, W]
+        B, C, H, W = nchw.shape
+        # Flatten spatial dims
+        bcs = nchw.view(B, C, H * W)  # [B, C, S]
+        # Learned spatial mixing per channel: [B, C, S] x [C, S, F] -> [B, C, F]
+        output = torch.einsum("bcs,csf->bcf", bcs, self.kernel)
+
+        # Reshape to combine channel and feature dimensions [B, C*F]
+        output = output.reshape(output.size(0), -1)
+
+        # Remove batch dim if the input had no batch
+        if original_ndim == 3:
             output = output.squeeze(0)
 
         return output
@@ -173,8 +201,21 @@ class Classifier(PreTrainedPolicy):
             param.requires_grad = False
 
     def _create_single_encoder(self):
+        class _UnwrapToTensor(nn.Module):
+            def forward(self, x):
+                # HuggingFace vision models may return BaseModelOutput-like objects
+                if hasattr(x, "last_hidden_state"):
+                    x = x.last_hidden_state
+                if hasattr(x, "pooler_output") and x is None:
+                    # ignore pooler_output if absent
+                    pass
+                return x
+
         encoder = nn.Sequential(
             self.encoder,
+            _UnwrapToTensor(),
+            # Ensure a fixed 4x4 spatial grid independent of input resolution
+            nn.AdaptiveAvgPool2d((4, 4)),
             SpatialLearnedEmbeddings(
                 height=4,
                 width=4,

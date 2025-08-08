@@ -217,6 +217,9 @@ def make_transform_from_config(cfg: ImageTransformConfig):
         return v2.ColorJitter(**cfg.kwargs)
     elif cfg.type == "SharpnessJitter":
         return SharpnessJitter(**cfg.kwargs)
+    elif cfg.type == "Resize":
+        # Expect kwargs like {"size": (H, W), "antialias": True}
+        return v2.Resize(**cfg.kwargs)
     else:
         raise ValueError(f"Transform '{cfg.type}' is not valid.")
 
