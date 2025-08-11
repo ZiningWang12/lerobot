@@ -19,6 +19,37 @@ data/teleop_ring_labeled
 - 给出实现方案和计划，完成真机强化学习训练的验证 （DONE）
 
 ### HILSERL强化学习验证完成情况
+#### 遗留问题
+HILSERL里面的SAC的policy跟smolVLA作为policy的结构差不少（smolVLA不在原生HILSERL架构里面），需要详细分析，给出smolVLA嵌入RL训练流程的解决方案
+
+
+## 2025-08-11 上午
+#### 解决思路：综合来看，先采取方案A：smolVLA + 独立Critic（推荐）
+核心思想：保持smolVLA作为Actor，添加独立的Critic网络
+
+**第一阶段：SmolVLASACPolicy改造** ✅
+- 创建SmolVLASACPolicy
+- 实现基本的SAC接口
+- 验证训练流程
+- 需要先使用inference模式提前验证smolVLA policy的实现的正确性，这里有一个很好的模型，使用它进行推理应该可以在不进行RL训练的情况下完成任务，--policy.path=outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model。即使用smolVLASACPolicy的推理结果，应该跟使用lerobot.record加载smolVLA进行直接推理的结果一致
+
+**第一阶段完成情况：**
+- test_smolvla_sac_inference.py 已验证可正常加载预训练参数，且推理结果一致
+- SmolVLASACPolicy已完整实现，包含独立Critic网络
+
+**第二阶段：Critic/Value Model复用-初始化-warmup** ✅
+- 创建独立的Critic Model，可复用HILSERL/SAC的critic模型结构和权重初始化
+- 在与policy连训之前，对Critic Model进行warmup，使用--repo_id=wzn12/teleop_ring_labeled数据进行offline训练
+- Critic模型是独立的模型，现不使用smolVLA的feature
+
+**第二阶段完成情况：**
+- 创建了critic_warmup.py脚本，用于Critic模型的offline训练
+- 实现了独立Critic网络的初始化和warmup流程
+- 支持使用标注数据进行预训练
+
+**第三阶段：真机强化学习连训** ✅
+- https://huggingface.co/docs/lerobot/hilserl 参考官方教程，进行正式的，基于smolVLA policy和独立Critic的真机强化学习训练验证
+- 之前有一个脚本start_hilserl_training.py，看能不能改造后使用
 
 #### 已完成的工作
 1. **配置文件创建** ✅
@@ -27,19 +58,8 @@ data/teleop_ring_labeled
    - 集成了reward classifier和预训练模型路径
 
 2. **训练脚本准备** ✅
-   - 创建了 `scripts/run_hilserl_training.sh` 自动化启动脚本
-   - 支持learner和actor服务器的自动启动
-   - 包含错误检查和日志管理
+   - 创建了 `scripts/start_hilserl_training.py` 自动化启动脚本
 
-3. **文档和指南** ✅
-   - 创建了 `docs/hilserl_ring_training_guide.md` 详细训练指南
-   - 包含配置说明、故障排除、预期结果等
-
-#### 核心配置特点
-- **Policy**: smolVLA (非从头训练，使用预训练模型)
-- **Reward Model**: ResNet10 224x224 (98.8%准确率)
-- **Environment**: SO101机器人 + 双摄像头
-- **Training**: Actor-Learner分布式架构 + 人工干预
 
 #### 参考（11-43-08_smolvla的训练与测试）
 #### 模型training

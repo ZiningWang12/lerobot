@@ -211,6 +211,7 @@ def visualize_policy_inference(
     # 用于累积误差统计
     episode_errors = []
     prediction_successes = []
+    episode_training_losses = []
 
     for batch in tqdm.tqdm(dataloader, total=len(dataloader), desc="可视化策略推理"):
         # iterate over the batch

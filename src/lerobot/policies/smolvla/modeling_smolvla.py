@@ -349,6 +349,17 @@ class SmolVLAPolicy(PreTrainedPolicy):
 
         self.language_tokenizer = AutoProcessor.from_pretrained(self.config.vlm_model_name).tokenizer
         self.model = VLAFlowMatching(config)
+        
+        # Add actor attribute for compatibility with HILSERL training
+        class ActorWrapper:
+            def __init__(self, policy):
+                self.policy = policy
+            
+            def state_dict(self):
+                return self.policy.state_dict()
+        
+        self.actor = ActorWrapper(self)
+        
         self.reset()
 
     def reset(self):

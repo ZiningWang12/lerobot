@@ -1,17 +1,17 @@
 {
   "task": "hilserl_smolvla_sac_ring",
-  "output_dir": "outputs/train/hilserl_smolvla_ring",
+  "output_dir": "outputs/train/smolvla_sac_ring",
   "resume": false,
   "seed": 10000,
   "wandb": {
-    "enable": true,
+    "enable": false,
     "job_type": "train",
-    "notes": "HILSERL强化学习训练 - SmolVLA + 独立Critic",
+    "notes": "SmolVLA-SAC training for ring pickup task",
     "project": "lerobot_hilserl",
-    "tags": ["smolvla", "sac", "ring", "hilserl", "real_robot"]
+    "tags": ["smolvla", "sac", "ring", "hilserl"]
   },
   "dataset": {
-    "repo_id": "wzn12/teleop_ring_labeled",
+    "repo_id": "wzn12/teleop_ring",
     "use_imagenet_stats": true
   },
   "env": {
@@ -74,15 +74,15 @@
     "min_period": 1,
     "max_period": 10000,
     "input_features": {
-      "observation.images.handeye": {
+      "handeye": {
         "type": "IMAGE",
-        "shape": [3, 600, 800]
+        "shape": [3, 480, 640]
       },
-      "observation.images.global": {
+      "global": {
         "type": "IMAGE", 
-        "shape": [3, 600, 800]
+        "shape": [3, 480, 640]
       },
-      "observation.state": {
+      "state": {
         "type": "STATE",
         "shape": [6]
       }
@@ -95,9 +95,9 @@
     },
     "normalization_mapping": {
       "action": "action",
-      "observation.images.handeye": "handeye",
-      "observation.images.global": "global",
-      "observation.state": "state"
+      "handeye": "handeye",
+      "global": "global",
+      "state": "state"
     },
     "actor_learner_config": {
       "host": "127.0.0.1",
@@ -134,4 +134,4 @@
     "use_torch_compile": false,
     "freeze_smolvla_for_critic": true
   }
-} 
+}

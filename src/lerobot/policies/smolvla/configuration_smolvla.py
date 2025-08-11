@@ -22,6 +22,25 @@ from lerobot.optim.schedulers import (
 )
 
 
+@dataclass
+class ConcurrencyConfig:
+    """Configuration for the concurrency of the actor and learner.
+    Possible values are:
+    - "threads": Use threads for the actor and learner.
+    - "processes": Use processes for the actor and learner.
+    """
+    actor: str = "threads"
+    learner: str = "threads"
+
+
+@dataclass
+class ActorLearnerConfig:
+    learner_host: str = "127.0.0.1"
+    learner_port: int = 50051
+    policy_parameters_push_frequency: int = 4
+    queue_get_timeout: float = 2
+
+
 @PreTrainedConfig.register_subclass("smolvla")
 @dataclass
 class SmolVLAConfig(PreTrainedConfig):
@@ -100,6 +119,39 @@ class SmolVLAConfig(PreTrainedConfig):
 
     min_period: float = 4e-3  # sensitivity range for the timestep used in sine-cosine positional encoding
     max_period: float = 4.0
+
+    # Configuration for actor-learner architecture (for HILSERL)
+    actor_learner_config: ActorLearnerConfig = field(default_factory=ActorLearnerConfig)
+    # Configuration for concurrency settings (you can use threads or processes for the actor and learner)
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
+    storage_device: str = "cuda"
+    grad_clip_norm: float = 1.0
+    online_step_before_learning: int = 100
+    online_steps: int = 1000000
+    online_env_seed: int = 10000
+    online_buffer_capacity: int = 100000
+    offline_buffer_capacity: int = 100000
+    async_prefetch: bool = False
+    policy_update_freq: int = 1
+    discount: float = 0.99
+    temperature_init: float = 1.0
+    num_critics: int = 2
+    num_subsample_critics: int | None = None
+    critic_lr: float = 3e-4
+    actor_lr: float = 3e-4
+    temperature_lr: float = 3e-4
+    critic_target_update_weight: float = 0.005
+    utd_ratio: int = 1
+    state_encoder_hidden_dim: int = 256
+    latent_dim: int = 256
+    target_entropy: float | None = None
+    use_backup_entropy: bool = True
+    vision_encoder_name: str | None = None
+    image_encoder_hidden_dim: int = 32
+    shared_encoder: bool = True
+    num_discrete_actions: int | None = None
+    image_embedding_pooling_dim: int = 8
+    use_torch_compile: bool = True
 
     def __post_init__(self):
         super().__post_init__()
