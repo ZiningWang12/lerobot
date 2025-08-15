@@ -155,7 +155,12 @@ python -m lerobot.scripts.train \
     --wandb.enable=true \
     --save_freq=2000 \
     --num_workers=8  # 从4增加到8
+```
 
+#### Critic warmup训练（用于强化学习）
+```bash
+# 训练critic模型，为HILSERL强化学习做准备
+cd /home/znw/projects/lerobot/lerobot && source lerobot_env/bin/activate && python scripts/critic_warmup.py
 ```
 
 #### 模型inference（实时机器人控制）

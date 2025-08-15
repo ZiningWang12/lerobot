@@ -39,6 +39,9 @@ from lerobot.policies.sac.modeling_sac import (
 )
 from lerobot.policies.utils import get_device_from_parameters
 
+# Import constants from SmolVLA
+from lerobot.policies.smolvla.modeling_smolvla import ACTION, OBS_STATE
+
 
 class IndependentCritic(nn.Module):
     """
@@ -127,11 +130,21 @@ class IndependentCritic(nn.Module):
 class SmolVLAActorWrapper(nn.Module):
     """
     Wrapper for SmolVLA policy to make it compatible with SAC actor interface.
+    
+    Key insight: SmolVLA is a diffusion policy, so we need to use its inference methods
+    (sample_actions) rather than its training methods (forward).
     """
     
     def __init__(self, smolvla_policy: SmolVLAPolicy):
         super().__init__()
         self.smolvla = smolvla_policy
+        
+        # For SAC compatibility, we need to track action statistics
+        # This will be used to compute log_probs for entropy regularization
+        self.action_stats = {
+            'mean': None,
+            'std': None
+        }
     
     def forward(
         self,
@@ -139,14 +152,101 @@ class SmolVLAActorWrapper(nn.Module):
         observation_features: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
         """
-        Forward pass through SmolVLA actor
+        Forward pass through SmolVLA actor for SAC training
         
         Returns:
             tuple: (actions, log_probs, means)
+            
+        Note: Since SmolVLA is a diffusion policy, we:
+        1. Use _get_action_chunk() for action generation
+        2. Approximate log_probs using action statistics
+        3. Return means as actions (since diffusion doesn't provide explicit means)
         """
-        # Use SmolVLA's forward method
-        actions, log_probs, means = self.smolvla.forward(observations)
-        return actions, log_probs, means
+        # Use SmolVLA's inference method, not training method
+        with torch.no_grad():
+            # Prepare batch for SmolVLA - use original observation format
+            batch = self._prepare_batch_for_smolvla(observations)
+            
+            # Sample actions using diffusion denoising
+            # Use _get_action_chunk which internally calls self.model.sample_actions
+            actions = self.smolvla._get_action_chunk(batch)
+            
+            # Unpad actions to get final action dimension
+            original_action_dim = self.smolvla.config.action_feature.shape[0]
+            actions = actions[:, :, :original_action_dim]
+            
+            # Unnormalize actions
+            actions = self.smolvla.unnormalize_outputs({ACTION: actions})[ACTION]
+            
+            # For SAC, we need single actions, not action chunks
+            # Take the first action from the chunk
+            actions = actions[:, 0, :]  # Shape: (batch_size, action_dim)
+            
+            # Approximate log_probs for SAC entropy regularization
+            # Since diffusion doesn't provide explicit log_probs, we use a simple approximation
+            log_probs = self._approximate_log_probs(actions)
+            
+            # For means, we use the actions themselves
+            means = actions
+            
+            return actions, log_probs, means
+    
+    def _prepare_batch_for_smolvla(self, observations: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Prepare observations for SmolVLA processing"""
+        # Create a batch with the original observation format that SmolVLA expects
+        batch = {
+            'observation.image.handeye': observations['observation.image.handeye'],
+            'observation.image.global': observations['observation.image.global'],
+            'observation.state': observations['observation.state'],
+            'task': observations.get('task', ['pick up the black ring'] * observations['observation.state'].shape[0])
+        }
+        
+        # Apply SmolVLA preprocessing - this will handle the image processing internally
+        batch = self.smolvla._prepare_batch(batch)
+        
+        return batch
+    
+    def _approximate_log_probs(self, actions: Tensor) -> Tensor:
+        """
+        Approximate log probabilities for SAC entropy regularization.
+        
+        Since SmolVLA is a diffusion policy, we don't have explicit log_probs.
+        We approximate them using a simple Gaussian assumption.
+        
+        IMPORTANT: We need to ensure log_probs are in a reasonable range to avoid
+        exploding TD targets in the critic loss computation.
+        """
+        batch_size, action_dim = actions.shape
+        
+        # Initialize action statistics if not done
+        if self.action_stats['mean'] is None:
+            self.action_stats['mean'] = torch.zeros(action_dim, device=actions.device)
+            self.action_stats['std'] = torch.ones(action_dim, device=actions.device)
+        
+        # Update statistics (simple moving average)
+        alpha = 0.01  # Learning rate for statistics update
+        with torch.no_grad():
+            batch_mean = actions.mean(dim=0)
+            batch_std = actions.std(dim=0)
+            
+            self.action_stats['mean'] = (1 - alpha) * self.action_stats['mean'] + alpha * batch_mean
+            self.action_stats['std'] = (1 - alpha) * self.action_stats['std'] + alpha * batch_std
+        
+        # Compute approximate log_probs using current statistics
+        # Use a more conservative approach to avoid extreme values
+        normalized_actions = (actions - self.action_stats['mean']) / (self.action_stats['std'] + 1e-8)
+        
+        # Clip normalized actions to prevent extreme values
+        normalized_actions = torch.clamp(normalized_actions, -3.0, 3.0)
+        
+        # Compute log_probs with clipping to reasonable range
+        # For 6D actions, typical range should be around -18 to 0
+        log_probs = -0.5 * (normalized_actions ** 2).sum(dim=-1)
+        
+        # Clip log_probs to reasonable range to prevent TD target explosion
+        log_probs = torch.clamp(log_probs, -20.0, 0.0)
+        
+        return log_probs
     
     def state_dict(self, destination=None, prefix='', keep_vars=False):
         """Get state dict from SmolVLA"""
@@ -238,6 +338,20 @@ class SmolVLASACPolicy(PreTrainedPolicy):
             normalize_inputs=self.normalize_inputs,
             normalize_targets=self.normalize_targets,
         )
+        # Optionally initialize critic from a warmup checkpoint if provided
+        if getattr(self.config, "critic_init_state_path", None):
+            ckpt_path = Path(self.config.critic_init_state_path)
+            if ckpt_path.exists():
+                try:
+                    state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                    if isinstance(state, dict) and "critic_state_dict" in state:
+                        self.critic.load_state_dict(state["critic_state_dict"], strict=False)
+                    else:
+                        # Allow loading a raw state_dict as well
+                        self.critic.load_state_dict(state, strict=False)
+                except Exception as exc:
+                    # Do not fail training if loading fails; continue with random init
+                    print(f"[SmolVLASAC] Warning: failed to load critic init from {ckpt_path}: {exc}")
     
     def _init_discrete_critics(self):
         """Initialize discrete critic if needed"""
@@ -282,7 +396,7 @@ class SmolVLASACPolicy(PreTrainedPolicy):
             self.target_entropy = -dim / 2
     
     def get_optim_params(self) -> dict:
-        """Get optimizer parameters for different components"""
+        """Get optimizer parameters for different components (compatible with official SAC)"""
         optim_params = {
             "actor": self.actor.parameters(),
             "critic": self.critic.critic_ensemble.parameters(),
@@ -378,7 +492,30 @@ class SmolVLASACPolicy(PreTrainedPolicy):
         observation_features: Tensor | None = None,
     ) -> Tensor:
         """Forward pass through critic network"""
-        return self.critic.forward(observations, actions, use_target, observation_features)
+        # Filter out non-tensor fields (like 'task') for critic
+        critic_observations = {
+            k: v for k, v in observations.items() 
+            if isinstance(v, torch.Tensor)
+        }
+        return self.critic.forward(critic_observations, actions, use_target, observation_features)
+    
+    def discrete_critic_forward(
+        self, 
+        observations, 
+        use_target=False, 
+        observation_features=None
+    ) -> torch.Tensor:
+        """Forward pass through discrete critic network (compatible with official SAC)"""
+        if not hasattr(self, 'discrete_critic'):
+            raise NotImplementedError("Discrete critic not initialized. Set num_discrete_actions in config.")
+        
+        discrete_critic = self.discrete_critic_target if use_target else self.discrete_critic
+        # Filter out non-tensor fields (like 'task') for critic
+        critic_observations = {
+            k: v for k, v in observations.items() 
+            if isinstance(v, torch.Tensor)
+        }
+        return discrete_critic(critic_observations, observation_features)
     
     def compute_loss_critic(
         self,
@@ -391,6 +528,9 @@ class SmolVLASACPolicy(PreTrainedPolicy):
         next_observation_features: Tensor | None = None,
     ) -> Tensor:
         """Compute critic loss using SAC algorithm"""
+        # Ensure done is float tensor for arithmetic operations (compatibility with both RL and dataset data)
+        done_float = done.float() if done.dtype == torch.bool else done
+        
         # Current Q-values
         current_q_values = self.critic_forward(observations, actions, use_target=False, observation_features=observation_features)
         
@@ -404,10 +544,22 @@ class SmolVLASACPolicy(PreTrainedPolicy):
             # Take minimum over critics (double Q-learning)
             next_q_values = torch.min(next_q_values, dim=0)[0]
             
-            # Compute target
-            target_q_values = rewards + (1 - done) * self.config.discount * (
+            # Compute target - use done_float for arithmetic compatibility
+            target_q_values = rewards + (1 - done_float) * self.config.discount * (
                 next_q_values - self.temperature * next_log_probs
             )
+            
+            # Debug: Print detailed information for first batch
+            if torch.rand(1).item() < 0.01:  # Only print 1% of the time to avoid spam
+                print(f"🔍 TD Loss Debug Info:")
+                print(f"   Rewards: {rewards[:3].cpu().numpy()}")
+                print(f"   Done: {done_float[:3].cpu().numpy()}")
+                print(f"   Discount: {self.config.discount}")
+                print(f"   Next Q values: {next_q_values[:3].cpu().numpy()}")
+                print(f"   Temperature: {self.temperature}")
+                print(f"   Next log probs: {next_log_probs[:3].cpu().numpy()}")
+                print(f"   Target Q values: {target_q_values[:3].cpu().numpy()}")
+                print(f"   Current Q values: {current_q_values[:, :3].cpu().numpy()}")
         
         # Compute loss for each critic
         critic_losses = []
@@ -415,7 +567,78 @@ class SmolVLASACPolicy(PreTrainedPolicy):
             loss = nn.functional.mse_loss(current_q_values[i], target_q_values)
             critic_losses.append(loss)
         
-        return torch.stack(critic_losses).mean()
+        total_loss = torch.stack(critic_losses).mean()
+        
+        # Debug: Print loss statistics
+        if torch.rand(1).item() < 0.01:  # Only print 1% of the time
+            print(f"🔍 Loss Debug Info:")
+            print(f"   Individual critic losses: {[l.item() for l in critic_losses]}")
+            print(f"   Total loss: {total_loss.item():.4f}")
+        
+        return total_loss
+    
+    def compute_loss_discrete_critic(
+        self,
+        observations,
+        actions,
+        rewards,
+        next_observations,
+        done,
+        observation_features=None,
+        next_observation_features=None,
+        complementary_info=None,
+    ):
+        """Compute discrete critic loss using SAC algorithm (compatible with official SAC)"""
+        # Ensure done is float tensor for arithmetic operations (compatibility with both RL and dataset data)
+        done_float = done.float() if done.dtype == torch.bool else done
+        
+        # NOTE: We only want to keep the discrete action part
+        # In the buffer we have the full action space (continuous + discrete)
+        # We need to split them before concatenating them in the critic forward
+        actions_discrete: Tensor = actions[:, -1:].clone()  # Assume discrete action is last dimension
+        actions_discrete = torch.round(actions_discrete)
+        actions_discrete = actions_discrete.long()
+
+        discrete_penalties: Tensor | None = None
+        if complementary_info is not None:
+            discrete_penalties: Tensor | None = complementary_info.get("discrete_penalty")
+
+        with torch.no_grad():
+            # For DQN, select actions using online network, evaluate with target network
+            next_discrete_qs = self.discrete_critic_forward(
+                next_observations, use_target=False, observation_features=next_observation_features
+            )
+            best_next_discrete_action = torch.argmax(next_discrete_qs, dim=-1, keepdim=True)
+
+            # Get target Q-values from target network
+            target_next_discrete_qs = self.discrete_critic_forward(
+                observations=next_observations,
+                use_target=True,
+                observation_features=next_observation_features,
+            )
+
+            # Use gather to select Q-values for best actions
+            target_next_discrete_q = torch.gather(
+                target_next_discrete_qs, dim=1, index=best_next_discrete_action
+            ).squeeze(-1)
+
+            # Compute target Q-value with Bellman equation - use done_float for arithmetic compatibility
+            rewards_discrete = rewards
+            if discrete_penalties is not None:
+                rewards_discrete = rewards + discrete_penalties
+            target_discrete_q = rewards_discrete + (1 - done_float) * self.config.discount * target_next_discrete_q
+
+        # Get predicted Q-values for current observations
+        predicted_discrete_qs = self.discrete_critic_forward(
+            observations=observations, use_target=False, observation_features=observation_features
+        )
+
+        # Use gather to select Q-values for taken actions
+        predicted_discrete_q = torch.gather(predicted_discrete_qs, dim=1, index=actions_discrete).squeeze(-1)
+
+        # Compute MSE loss between predicted and target Q-values
+        discrete_critic_loss = nn.functional.mse_loss(input=predicted_discrete_q, target=target_discrete_q)
+        return discrete_critic_loss
     
     def compute_loss_actor(
         self,
@@ -452,10 +675,19 @@ class SmolVLASACPolicy(PreTrainedPolicy):
         return temperature_loss
     
     def update_target_networks(self):
-        """Update target networks with soft updates"""
+        """Update target networks with exponential moving average (compatible with official SAC)"""
         tau = self.config.critic_target_update_weight
-        self.critic.update_target(tau)
         
+        # Update main critic target networks
+        for target_param, param in zip(
+            self.critic.critic_target.parameters(),
+            self.critic.critic_ensemble.parameters(),
+            strict=True,
+        ):
+            target_param.data.mul_(1 - tau)
+            target_param.data.add_(tau * param.data)
+        
+        # Update discrete critic target networks if available
         if self.config.num_discrete_actions is not None:
             with torch.no_grad():
                 for param, target_param in zip(
@@ -515,9 +747,24 @@ class SmolVLASACPolicy(PreTrainedPolicy):
             return {"loss_temperature": loss_temperature}
         
         elif model == "discrete_critic" and self.config.num_discrete_actions is not None:
-            # Implement discrete critic loss if needed
-            # For now, return a placeholder
-            return {"loss_discrete_critic": torch.tensor(0.0, device=actions.device)}
+            # Extract critic-specific components
+            rewards: Tensor = batch["reward"]
+            next_observations: dict[str, Tensor] = batch["next_state"]
+            done: Tensor = batch["done"]
+            next_observation_features: Tensor = batch.get("next_observation_feature")
+            complementary_info = batch.get("complementary_info")
+            
+            loss_discrete_critic = self.compute_loss_discrete_critic(
+                observations=observations,
+                actions=actions,
+                rewards=rewards,
+                next_observations=next_observations,
+                done=done,
+                observation_features=observation_features,
+                next_observation_features=next_observation_features,
+                complementary_info=complementary_info,
+            )
+            return {"loss_discrete_critic": loss_discrete_critic}
         
         else:
             raise ValueError(f"Unknown model type: {model}")

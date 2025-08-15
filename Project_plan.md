@@ -19,6 +19,9 @@ data/teleop_ring_labeled
 - 给出实现方案和计划，完成真机强化学习训练的验证 （DONE）
 
 ### HILSERL强化学习验证完成情况
+**第0阶段：Reward model训练** ✅
+reward model训练完成:使用--config_path src/lerobot/configs/reward_classifier_resnet10_ring_224.json 训出来的模型已上传
+https://huggingface.co/wzn12/reward_classifier_resnet10_ring_224
 #### 遗留问题
 HILSERL里面的SAC的policy跟smolVLA作为policy的结构差不少（smolVLA不在原生HILSERL架构里面），需要详细分析，给出smolVLA嵌入RL训练流程的解决方案
 
@@ -42,10 +45,14 @@ HILSERL里面的SAC的policy跟smolVLA作为policy的结构差不少（smolVLA�
 - 在与policy连训之前，对Critic Model进行warmup，使用--repo_id=wzn12/teleop_ring_labeled数据进行offline训练
 - Critic模型是独立的模型，现不使用smolVLA的feature
 
-**第二阶段完成情况：**
+**第二阶段完成情况：** ✅
 - 创建了critic_warmup.py脚本，用于Critic模型的offline训练
 - 实现了独立Critic网络的初始化和warmup流程
 - 支持使用标注数据进行预训练
+- 支持WandB日志记录和HuggingFace模型上传
+- 配置文件：src/lerobot/configs/critic_warmup_smolvla_ring.json
+- 启动命令：cd /home/znw/projects/lerobot/lerobot && source lerobot_env/bin/activate && python scripts/critic_warmup.py 
+- 训练结果：/home/znw/projects/lerobot/lerobot/outputs/train/critic_warmup_smolvla_ring，看起来epoch 19的val loss最小，当然实际上到epoch4之后就不怎么变了（这个TD loss的scale还算挺大的）
 
 **第三阶段：真机强化学习连训** ✅
 - https://huggingface.co/docs/lerobot/hilserl 参考官方教程，进行正式的，基于smolVLA policy和独立Critic的真机强化学习训练验证

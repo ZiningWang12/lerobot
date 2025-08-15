@@ -130,6 +130,8 @@ class SmolVLASACConfig(SmolVLAConfig):
     freeze_smolvla_for_critic: bool = True
     # Whether to use torch.compile for optimization
     use_torch_compile: bool = False  # Keep False for stability initially
+    # Optional path to initialize critic weights from a warmup checkpoint (state_dict with key 'critic_state_dict')
+    critic_init_state_path: str | None = None
     
     def __post_init__(self):
         super().__post_init__()
