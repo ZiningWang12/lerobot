@@ -32,11 +32,6 @@ class SmolVLARewardClassifierConfig(PreTrainedConfig):
     use_ignore_label: bool = True  # Support ignore label for uncertain cases
     ignore_label_value: int = -1  # Value used for ignore label
     
-    # SmolVLA-specific configs
-    vlm_model_name: str = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
-    load_vlm_weights: bool = True
-    freeze_vlm: bool = True  # Freeze VLM weights during training
-    
     # Task description for language guidance
     task_description: str = "Is the robot successfully completing the task?"
     use_task_description: bool = True

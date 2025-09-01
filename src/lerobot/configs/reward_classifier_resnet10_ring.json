@@ -34,11 +34,11 @@
     "use_amp": true,
     "repo_id": "wzn12/reward_classifier_resnet10_ring",
     "input_features": {
-      "observation.image.handeye": {
+      "observation.images.handeye": {
         "type": "VISUAL",
         "shape": [3, 128, 128]
       },
-      "observation.image.global": {
+      "observation.images.global": {
         "type": "VISUAL",
         "shape": [3, 128, 128]
       }

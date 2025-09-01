@@ -245,11 +245,11 @@ def create_smolvla_sac_config() -> SmolVLASACConfig:
     config = SmolVLASACConfig(
         # 输入特征配置
         input_features={
-            "observation.image.handeye": PolicyFeature(
+            "observation.images.handeye": PolicyFeature(
                 type=FeatureType.VISUAL,
                 shape=(3, 600, 800)
             ),
-            "observation.image.global": PolicyFeature(
+            "observation.images.global": PolicyFeature(
                 type=FeatureType.VISUAL, 
                 shape=(3, 600, 800)
             ),
@@ -268,8 +268,8 @@ def create_smolvla_sac_config() -> SmolVLASACConfig:
         # 归一化映射
         normalization_mapping={
             "action": "action",
-            "observation.image.handeye": "handeye",
-            "observation.image.global": "global",
+            "observation.images.handeye": "handeye",
+            "observation.images.global": "global",
             "observation.state": "state"
         },
         # Critic网络配置
@@ -483,15 +483,15 @@ def train_critic_offline(
             # 构建标准格式的batch数据
             batch_data = {
                 "state": {
-                    "observation.image.handeye": batch["observation.image.handeye"],
-                    "observation.image.global": batch["observation.image.global"],
+                    "observation.images.handeye": batch["observation.images.handeye"],
+                    "observation.images.global": batch["observation.images.global"],
                     "observation.state": batch["observation.state"],
                 },
                 "action": batch["action"],
                 "reward": batch["next.reward"],
                 "next_state": {
-                    "observation.image.handeye": batch["observation.image.handeye"].clone(),
-                    "observation.image.global": batch["observation.image.global"].clone(),
+                    "observation.images.handeye": batch["observation.images.handeye"].clone(),
+                    "observation.images.global": batch["observation.images.global"].clone(),
                     "observation.state": batch["observation.state"].clone(),
                     "task": batch["task"],  # 添加task字段，SmolVLA actor需要
                     "action": batch["action"].clone(),  # 添加action字段，SmolVLA actor需要
@@ -569,15 +569,15 @@ def train_critic_offline(
                 # 构建验证batch数据
                 val_batch_data = {
                     "state": {
-                        "observation.image.handeye": batch["observation.image.handeye"],
-                        "observation.image.global": batch["observation.image.global"],
+                        "observation.images.handeye": batch["observation.images.handeye"],
+                        "observation.images.global": batch["observation.images.global"],
                         "observation.state": batch["observation.state"],
                     },
                     "action": batch["action"],
                     "reward": batch["next.reward"],
                     "next_state": {
-                        "observation.image.handeye": batch["observation.image.handeye"].clone(),
-                        "observation.image.global": batch["observation.image.global"].clone(),
+                        "observation.images.handeye": batch["observation.images.handeye"].clone(),
+                        "observation.images.global": batch["observation.images.global"].clone(),
                         "observation.state": batch["observation.state"].clone(),
                         "task": batch["task"],  # 添加task字段，SmolVLA actor需要
                         "action": batch["action"].clone(),  # 添加action字段，SmolVLA actor需要

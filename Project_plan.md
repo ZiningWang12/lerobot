@@ -44,7 +44,7 @@ HILSERL里面的SAC的policy跟smolVLA作为policy的结构差不少（smolVLA�
 - 创建独立的Critic Model，可复用HILSERL/SAC的critic模型结构和权重初始化
 - 在与policy连训之前，对Critic Model进行warmup，使用--repo_id=wzn12/teleop_ring_labeled数据进行offline训练
 - Critic模型是独立的模型，现不使用smolVLA的feature
-
+## 2025-08-13 下午
 **第二阶段完成情况：** ✅
 - 创建了critic_warmup.py脚本，用于Critic模型的offline训练
 - 实现了独立Critic网络的初始化和warmup流程
@@ -57,7 +57,7 @@ HILSERL里面的SAC的policy跟smolVLA作为policy的结构差不少（smolVLA�
 **第三阶段：真机强化学习连训** ✅
 - https://huggingface.co/docs/lerobot/hilserl 参考官方教程，进行正式的，基于smolVLA policy和独立Critic的真机强化学习训练验证
 - 之前有一个脚本start_hilserl_training.py，看能不能改造后使用
-
+## 2025-08-14 下午
 #### 已完成的工作
 1. **配置文件创建** ✅
    - 创建了 `src/lerobot/configs/train_config_hilserl_smolvla_ring.json`
@@ -67,6 +67,20 @@ HILSERL里面的SAC的policy跟smolVLA作为policy的结构差不少（smolVLA�
 2. **训练脚本准备** ✅
    - 创建了 `scripts/start_hilserl_training.py` 自动化启动脚本
 
+3. **框架集成与加载路径打通** ✅
+   - 在 `src/lerobot/policies/factory.py` 注册 `smolvla_sac`，可被actor/learner直接实例化
+   - 在 `src/lerobot/envs/configs.py` 为 `gym_manipulator` 增加默认 `features`/`features_map`（手眼/全局双目800×600，state/action为6D），便于从env推导policy特征
+   - 在 HIL 环境中通过 `env.reward_classifier_pretrained_path` 自动加载 Reward Classifier，并封装到 `RewardWrapper`
+   - `SmolVLASACPolicy` 支持用 `policy.critic_init_state_path` 注入离线 warmup 的 critic 权重
+   - 启动脚本 `start_hilserl_training.py` 从配置读取路径，自动把 `env.pretrained_policy_name_or_path` 作为 `--policy.path` 传给 learner/actor
+
+## 2025-08-18 👆
+   - 目前看来第三阶段不太行，smolVLA和HILSERL的框架不兼容的地方太多了
+
+## 2025-08-27
+   - 目前来看 $reward = label \in \{0,1\} $ 太sparse了，在VLA没有学好的情况下onlineRL很难优化需要设计一个
+   $$reward(t)=label(t) + 0.5 \times (1 - \min\{1, \left \Vert a(t)-a^* \right \Vert_2\})$$
+   其中$a^*$是第一帧$label=1$时机器人joint的弧度制读数，这样去牵引pick任务接近目标
 
 #### 参考（11-43-08_smolvla的训练与测试）
 #### 模型training
@@ -97,20 +111,21 @@ python -m lerobot.record \
     --teleop.type=so101_leader \
     --teleop.port=/dev/ttyACM0 \
     --teleop.id=znw_arm_l1 \
-    --dataset.single_task="pick up the black ring" \
+    --dataset.single_task="Pick the screw driver" \
     --dataset.episode_time_s=100 \
+    --dataset.reset_time_s=15 \
     --dataset.num_episodes=10 \
     --policy.path=outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model \
     --policy.device=cuda \
     --policy.use_amp=false \
     --display_data=true \
-    --dataset.repo_id=wzn12/eval_ring-smolVLA_test
+    --dataset.repo_id=wzn12/eval_ring-smolVLA_test1
 ```
 
-#### HILSERL强化学习训练启动
+#### HILSERL强化学习训练启动（推荐使用 .py 启动器）
 ```bash
-# 使用完整自动化脚本（推荐）
-./scripts/start_hilserl_training.sh
+# 一键启动（推荐）
+python src/lerobot/scripts/start_hilserl_training.py
 
 # 或手动启动
 # 终端1: Learner服务器
@@ -118,15 +133,22 @@ source lerobot_env/bin/activate
 export HF_HUB_OFFLINE=1
 export HF_ENDPOINT=https://hf-mirror.com
 python -m lerobot.scripts.rl.learner \
-    --config_path src/lerobot/configs/train_config_hilserl_smolvla_ring.json
+    --config_path src/lerobot/configs/train_config_hilserl_smolvla_ring.json \
+    --policy.path outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model
 
 # 终端2: Actor服务器  
 source lerobot_env/bin/activate
 export HF_HUB_OFFLINE=1
 export HF_ENDPOINT=https://hf-mirror.com
 python -m lerobot.scripts.rl.actor \
-    --config_path src/lerobot/configs/train_config_hilserl_smolvla_ring.json
+    --config_path src/lerobot/configs/train_config_hilserl_smolvla_ring.json \
+    --policy.path outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model
 ```
+
+关键配置（位于 `src/lerobot/configs/train_config_hilserl_smolvla_ring.json`）
+- **env.pretrained_policy_name_or_path**: 预训练的 smolVLA 模型目录（自动传给 `--policy.path`）
+- **env.reward_classifier_pretrained_path**: 奖励分类器的 `pretrained_model` 路径
+- **policy.critic_init_state_path**: 离线 warmup 产生的 critic checkpoint（如 `outputs/train/critic_warmup_smolvla_ring/best_critic_checkpoint/best_critic.pth`）
 
 #### 验证和监控
 ```bash

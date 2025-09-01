@@ -34,8 +34,8 @@
     "use_amp": true,
     "repo_id": "wzn12/reward_classifier_resnet10_ring_224",
     "input_features": {
-      "observation.image.handeye": {"type": "VISUAL", "shape": [3, 224, 224]},
-      "observation.image.global": {"type": "VISUAL", "shape": [3, 224, 224]}
+      "observation.images.handeye": {"type": "VISUAL", "shape": [3, 224, 224]},
+      "observation.images.global": {"type": "VISUAL", "shape": [3, 224, 224]}
     },
     "output_features": {
       "next.reward": {"type": "REWARD", "shape": [1]}

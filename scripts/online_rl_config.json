@@ -1,0 +1,227 @@
+{
+  "task": "progressive_hybrid_rl_smolvla_sac_ring",
+  "output_dir": "outputs/train/rl_smolvla_ring_${timestamp}",
+  "job_name": "progressive_hybrid_rl_smolvla_sac_ring",
+  "resume": false,
+  "seed": 42,
+  "torch_dynamo": {
+    "disable": true,
+    "reason": "RTX 5080 Laptop GPU compatibility - Triton compilation issues with sm_120 architecture"
+  },
+  "wandb": {
+    "enable": true,
+    "project": "lerobot_progressive_hybrid_rl",
+    "entity": null,
+    "notes": "Progressive hybrid RL training with SmolVLA-SAC and human-labeled reward",
+    "tags": ["progressive_hybrid", "smolvla_sac", "real_robot", "human_labeled_reward"],
+    "mode": "online"
+  },
+  "dataset": {
+    "repo_id": "converted_teleop_ring_labeled",
+    "root": "outputs/converted_teleop_ring_labeled",
+    "use_imagenet_stats": true,
+    "_comment": "repo_id: 数据集标识符, root: 本地数据集路径"
+  },
+  "env": {
+    "type": "gym_manipulator",
+    "name": "progressive_hybrid_rl_env",
+    "pretrained_policy": {
+      "path": "outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model"
+    },
+    "reward_model": {
+      "type": "human_labeled",
+      "local_model_path": "outputs/reward_classifier_resnet10_ring_224_v2/checkpoints/004000/pretrained_model",
+      "repo_id": "wzn12/reward_classifier_resnet10_ring_224",
+      "use_huggingface": false,
+      "human_labeling": {
+        "enable": true,
+        "output_repo_id": "wzn12/online_rl_labeled_ring"
+      }
+    },
+    "robot": {
+      "type": "so101_follower",
+      "port": "/dev/ttyACM1",
+      "id": "znw_arm_f1",
+      "cameras": {
+        "handeye": {
+          "type": "opencv",
+          "index_or_path": "/dev/video4",
+          "width": 800,
+          "height": 600,
+          "fps": 25,
+          "color_mode": "rgb",
+          "rotation": "NO_ROTATION",
+          "warmup_s": 1
+        },
+        "global": {
+          "type": "opencv", 
+          "index_or_path": "/dev/video6",
+          "width": 800,
+          "height": 600,
+          "fps": 25,
+          "color_mode": "rgb",
+          "rotation": "NO_ROTATION",
+          "warmup_s": 1
+        }
+      }
+    },
+    "single_task": "pick up the black ring",
+    "episode_time_s": 30,
+    "reset_time_s": 5,
+    "device": "cuda"
+  },
+  "teleop": {
+    "type": "so101_leader",
+    "port": "/dev/ttyACM0",
+    "id": "znw_arm_l1"
+  },
+  "policy": {
+    "type": "smolvla_sac",
+    "pretrained_path": "outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model",
+    "device": "cuda",
+    "use_amp": false,
+    "vlm_model_name": "outputs/train/2025-08-04/11-43-08_smolvla/checkpoints/008000/pretrained_model",
+    "load_vlm_weights": false,
+    "chunk_size": 256,
+    "n_action_steps": 1,
+    "max_state_dim": 128,
+    "max_action_dim": 128,
+    "tokenizer_max_length": 1024,
+    "num_steps": 10,
+    "use_cache": true,
+    "attention_mode": "causal",
+    "prefix_length": 0,
+    "pad_language_to": 64,
+    "num_expert_layers": 12,
+    "num_vlm_layers": 18,
+    "self_attn_every_n_layers": 3,
+    "expert_width_multiplier": 4,
+    "min_period": 1,
+    "max_period": 10000,
+    "input_features": {
+      "observation.images.handeye": {
+        "type": "IMAGE",
+        "shape": [3, 600, 800]
+      },
+      "observation.images.global": {
+        "type": "IMAGE",
+        "shape": [3, 600, 800]
+      },
+      "observation.state": {
+        "type": "STATE",
+        "shape": [6]
+      }
+    },
+    "output_features": {
+      "action": {
+        "type": "ACTION",
+        "shape": [6]
+      }
+    },
+    "normalization_mapping": {
+      "action": "action",
+      "observation.images.handeye": "handeye",
+      "observation.images.global": "global",
+      "observation.state": "state"
+    },
+    "actor_learner_config": {
+      "host": "127.0.0.1",
+      "port": 50051,
+      "timeout": 30
+    },
+    "concurrency": {
+      "type": "process"
+    },
+    "storage_device": "cpu",
+    "grad_clip_norm": 1.0,
+    "online_step_before_learning": 50,
+    "online_steps": 1000,
+    "online_buffer_capacity": 10000,
+    "offline_buffer_capacity": 10000,
+    "policy_update_freq": 1,
+    "discount": 0.99,
+    "temperature_init": 1.0,
+    "num_critics": 2,
+    "critic_lr": 3e-4,
+    "actor_lr": 3e-4,
+    "temperature_lr": 3e-4,
+    "critic_target_update_weight": 0.005,
+    "utd_ratio": 2,
+    "state_encoder_hidden_dim": 256,
+    "latent_dim": 256,
+    "target_entropy": null,
+    "use_backup_entropy": true,
+    "vision_encoder_name": "resnet18",
+    "image_encoder_hidden_dim": 256,
+    "shared_encoder": false,
+    "num_discrete_actions": null,
+    "image_embedding_pooling_dim": 8,
+    "use_torch_compile": false,
+    "freeze_smolvla_for_critic": false,
+    "progressive_mixing": {
+      "enable": true,
+      "stages": {
+        "initial": {
+          "episodes": [0, 2],
+          "offline_ratio": 0.9,
+          "description": "初期：主要使用离线数据，在线数据少量引入"
+        },
+        "middle": {
+          "episodes": [2, 4],
+          "offline_ratio": 0.6,
+          "description": "中期：平衡离线在线数据，在线数据比例提升"
+        },
+        "late": {
+          "episodes": [4, 6],
+          "offline_ratio": 0.3,
+          "description": "后期：主要使用在线数据，离线数据作为正则化"
+        },
+        "final": {
+          "episodes": [6, 10],
+          "offline_ratio": 0.2,
+          "description": "最终：在线数据主导，离线数据保持稳定性"
+        }
+      },
+      "quality_threshold": 0.7,
+      "min_online_data": 50
+    }
+  },
+  "training": {
+    "total_episodes": 10,
+    "steps_per_episode": 100,
+    "learning_starts": 0,
+    "train_freq": 16,
+    "batch_size": 16,
+    "utd_ratio": 2,
+    "fps": 30,
+    "teleop_append": {
+      "enable": true,
+      "duration_s": 10,
+      "description": "策略数据收集完成后，追加遥操作数据以增强训练样本多样性"
+    }
+  },
+  "replay_buffer": {
+    "offline_capacity": 2000,
+    "online_capacity": 2000,
+    "min_samples_for_training": 100,
+    "max_offline_episodes": 2
+  },
+  "optimizer": {
+    "lr": 3e-4,
+    "weight_decay": 1e-4,
+    "grad_clip_norm": 1.0
+  },
+  "logging": {
+    "log_freq": 20,
+    "save_freq": 2
+  },
+  "visualization": {
+    "enable": false,
+    "rerun_port": 9090,
+    "log_images": true,
+    "log_states": true,
+    "log_actions": true,
+    "log_rewards": true,
+    "log_q_values": true
+  }
+} 

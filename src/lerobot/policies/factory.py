@@ -75,6 +75,10 @@ def get_policy_class(name: str) -> PreTrainedPolicy:
         from lerobot.policies.sac.reward_model.modeling_smolvla_classifier import SmolVLARewardClassifier
 
         return SmolVLARewardClassifier
+    elif name == "smolvla_sac":
+        from lerobot.policies.smolvla_sac.modeling_smolvla_sac import SmolVLASACPolicy
+
+        return SmolVLASACPolicy
     elif name == "smolvla":
         from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
@@ -100,6 +104,10 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return SACConfig(**kwargs)
     elif policy_type == "smolvla":
         return SmolVLAConfig(**kwargs)
+    elif policy_type == "smolvla_sac":
+        from lerobot.policies.smolvla_sac.configuration_smolvla_sac import SmolVLASACConfig
+
+        return SmolVLASACConfig(**kwargs)
     elif policy_type == "reward_classifier":
         return RewardClassifierConfig(**kwargs)
     elif policy_type == "smolvla_reward_classifier":

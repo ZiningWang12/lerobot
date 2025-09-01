@@ -177,3 +177,4 @@ outputs/
 
 # temp file
 untracked_temp_script.py
+*.mdc

@@ -195,8 +195,8 @@ class SmolVLAActorWrapper(nn.Module):
         """Prepare observations for SmolVLA processing"""
         # Create a batch with the original observation format that SmolVLA expects
         batch = {
-            'observation.image.handeye': observations['observation.image.handeye'],
-            'observation.image.global': observations['observation.image.global'],
+            'observation.images.handeye': observations['observation.images.handeye'],
+            'observation.images.global': observations['observation.images.global'],
             'observation.state': observations['observation.state'],
             'task': observations.get('task', ['pick up the black ring'] * observations['observation.state'].shape[0])
         }

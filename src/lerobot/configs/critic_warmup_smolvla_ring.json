@@ -33,8 +33,8 @@
     "repo_id": "wzn12/critic_warmup_smolvla_ring",
     "push_to_hub": true,
     "input_features": {
-      "observation.image.handeye": {"type": "VISUAL", "shape": [3, 600, 800]},
-      "observation.image.global": {"type": "VISUAL", "shape": [3, 600, 800]},
+      "observation.images.handeye": {"type": "VISUAL", "shape": [3, 600, 800]},
+      "observation.images.global": {"type": "VISUAL", "shape": [3, 600, 800]},
       "observation.state": {"type": "STATE", "shape": [6]}
     },
     "output_features": {

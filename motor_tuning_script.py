@@ -152,7 +152,7 @@ def interactive_tuning(port):
                 "P_Coefficient": 12,  # 降低P值减少振荡
                 "I_Coefficient": 0,   # 保持I为0避免积分饱和
                 "D_Coefficient": 24,  # 增加D值提供阻尼
-                "CW_Dead_Zone": 2,    # 增加死区减少抖动
+                "CW_Dead_Zone": 4,    # 增加死区减少抖动
                 "CCW_Dead_Zone": 2,
             }
             

@@ -13,12 +13,6 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 ### 2. 验证环境
 ```bash
-# 检查Python版本
-python --version  # 应为 Python 3.10.x
-
-# 检查PyTorch和GPU支持
-python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
-
 # 检查LeRobot安装
 python -c "import lerobot; print('LeRobot版本:', lerobot.__version__)"
 ```
@@ -179,6 +173,26 @@ python -m lerobot.record \
     --policy.use_amp=false \
     --display_data=true \
     --dataset.repo_id=wzn12/eval_ring-smolVLA_test
+
+
+
+## 不行，load base model完全不可用
+python -m lerobot.record \
+    --robot.type=so101_follower \
+    --robot.port=/dev/ttyACM1 \
+    --robot.id=znw_arm_f1 \
+    --robot.cameras='{"handeye": {"type": "opencv", "index_or_path": "/dev/video4", "width": 800, "height": 600, "fps": 25}, "global": {"type": "opencv", "index_or_path": "/dev/video6", "width": 800, "height": 600, "fps": 25}}' \
+    --teleop.type=so101_leader \
+    --teleop.port=/dev/ttyACM0 \
+    --teleop.id=znw_arm_l1 \
+    --dataset.repo_id=wzn12/teleop_ring \
+    --policy.path=lerobot/smolvla_base \
+    --policy.device=cuda \
+    --policy.use_amp=false \
+    --display_data=true \
+    --dataset.single_task="Pick the screw driver" \
+    --dataset.episode_time_s=100 \
+    --evaluate_only=true
 ```
 
 #### 模型推理可视化（在录制数据上）
@@ -231,8 +245,6 @@ sudo chmod 666 /dev/ttyACM1
 python -m lerobot.find_port
 python -m lerobot.find_cameras opencv 
 
-# 查找可用的摄像头设备
-ls /dev/video*
 ```
 
 ## 环境信息
@@ -260,6 +272,14 @@ ls /dev/video*
 1. **网络下载慢**: 已配置 `HF_ENDPOINT=https://hf-mirror.com`
 2. **GPU兼容性**: 已安装支持RTX 5080的PyTorch 2.7.1+cu128
 3. **环境依赖**: 已降级pymunk到6.11.1解决兼容性问题
+
+### 电机扭矩问题
+**问题**: record中断后关节无法移动，电机保持扭矩状态
+**解决方案**: 使用快速断开连接脚本
+```bash
+# 关闭电机扭矩，让关节可以自由移动
+python scripts/quick_disconnect.py --port=/dev/ttyACM1
+```
 
 ### 性能优化
 - 使用 `--policy.use_amp=true` 启用自动混合精度
