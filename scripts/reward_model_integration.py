@@ -23,12 +23,12 @@ import time
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 import matplotlib.patches as patches
+from src.lerobot.scripts.label_frames_dataset import LeRobotDataset, FrameLevelLabeler
 
 # 添加项目根目录到Python路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from src.lerobot.scripts.label_frames_dataset import LeRobotDataset, FrameLevelLabeler
 
 logger = logging.getLogger(__name__)
 
@@ -50,17 +50,11 @@ class MemoryFrameLevelLabeler(FrameLevelLabeler):
     
     def __init__(self, episode_data: List[Dict[str, Any]], episode_idx: int):
         # 调试：显示episode_data的结构
-        print(f"🔍 调试episode_data结构:")
         if episode_data:
-            print(f"   第一帧键: {list(episode_data[0].keys())}")
             # 检查图像字段
             image_keys = [key for key in episode_data[0].keys() if "image" in key]
-            print(f"   图像字段: {image_keys}")
-            for key in image_keys:
-                value = episode_data[0][key]
-                print(f"     {key}: type={type(value)}, shape={getattr(value, 'shape', 'N/A')}")
         else:
-            print("   episode_data为空！")
+            pass
         
         # 创建一个临时的dataset对象，用于满足父类__init__的要求
         class TempDataset:
@@ -73,7 +67,7 @@ class MemoryFrameLevelLabeler(FrameLevelLabeler):
                         if "image" in key.lower():
                             camera_keys.append(key)
                 
-                print(f"🔧 TempDataset设置camera_keys: {camera_keys}")
+
                 
                 self.meta = type('obj', (object,), {
                     'camera_keys': camera_keys
@@ -101,7 +95,6 @@ class MemoryFrameLevelLabeler(FrameLevelLabeler):
         
         # 创建临时dataset并调用父类__init__
         temp_dataset = TempDataset(episode_data)
-        print(f"🔧 调用父类__init__前，temp_dataset.meta.camera_keys: {temp_dataset.meta.camera_keys}")
         
         super().__init__(temp_dataset, episode_idx)
         
@@ -109,15 +102,9 @@ class MemoryFrameLevelLabeler(FrameLevelLabeler):
         self.frames = episode_data
         self.num_frames = len(self.frames)
         
-        print(f"🧠 内存标注器初始化: episode {episode_idx}, {self.num_frames} frames")
-        
         # 重新设置GUI标题
         if hasattr(self, 'fig'):
             self.fig.suptitle(f'Episode {self.episode_idx} Memory Frame Labeling Tool', fontsize=16)
-        
-        print(f"📷 找到相机: {self.camera_keys}")
-        print(f"   帧数: {self.num_frames}")
-        print(f"   标签: {self.labels}")
     
     def update_image(self):
         """重写update_image方法，调用父类方法处理图像格式转换"""
@@ -157,6 +144,11 @@ class SimpleRewardModelIntegrator:
         
         # 标注结果缓存
         self.labeled_rewards = {}  # (episode_idx, frame_idx) -> reward
+        
+        # Reward smoothing配置
+        self.reward_smoothing_enabled = config.get("reward_smoothing", {}).get("enable", True)
+        self.smoothing_frames = config.get("reward_smoothing", {}).get("frames", 20)
+        self.smoothing_type = config.get("reward_smoothing", {}).get("type", "linear")  # linear, exponential
         
         # 初始化模型
         self._load_model()
@@ -209,10 +201,8 @@ class SimpleRewardModelIntegrator:
         cache_key = (episode_idx, frame_idx)
         if cache_key in self.labeled_rewards:
             reward = self.labeled_rewards[cache_key]
-            print(f"📋 从缓存获取episode {episode_idx} frame {frame_idx} 的reward: {reward}")
             return reward
         
-        print(f"❓ 缓存中未找到episode {episode_idx} frame {frame_idx} 的reward")
         return None
     
     def _predict_with_model(self, observation: Dict[str, Any], action: torch.Tensor) -> float:
@@ -256,151 +246,83 @@ class SimpleRewardModelIntegrator:
         if not self.human_labeling_enabled:
             return False
         
-        print(f"🎯 启动episode {episode_idx} 的标注...")
+        # 确保online_dataset的episode_data_index已经更新
+        if online_dataset.episode_data_index is None or len(online_dataset.episode_data_index['from']) < online_dataset.num_episodes:
+            # 重新计算episode_data_index
+            from lerobot.datasets.utils import get_episode_data_index
+            online_dataset.episode_data_index = get_episode_data_index(
+                online_dataset.meta.episodes, 
+                online_dataset.episodes
+            )
         
-        # 从内存中的online_dataset提取episode数据
-        episode_data = self._extract_episode_data(episode_idx, online_dataset)
-        if not episode_data:
-            print(f"❌ 无法提取episode {episode_idx} 的数据")
-            return False
+        # 直接使用原始FrameLevelLabeler和online_dataset
+        # FrameLevelLabeler会通过EpisodeSampler自动提取指定episode的数据
+        labeler = FrameLevelLabeler(online_dataset, episode_idx)
+        result = labeler.show()
         
-        print(f"📊 提取到 {len(episode_data)} 帧数据")
+        if result['saved']:
+            # 将标注结果转换为reward并缓存
+            self._cache_episode_labels(episode_idx, result['labels'])
+            success = True
+        else:
+            success = False
         
-        # 使用内存版本的标注器
-        try:
-            labeler = MemoryFrameLevelLabeler(episode_data, episode_idx)
-            result = labeler.show()
-            
-            if result['saved']:
-                # 将标注结果转换为reward并缓存
-                self._cache_episode_labels(episode_idx, result['labels'])
-                print(f"✅ Episode {episode_idx} 标注完成并缓存")
-                return True
-            else:
-                print(f"❌ Episode {episode_idx} 标注未保存")
-                return False
+        # 显式清理labeler对象和相关资源
+        self._cleanup_labeler(labeler)
+        del labeler
+        
+        # 强制垃圾回收和内存清理
+        import gc
+        gc.collect()
+        
+        # 清理GPU缓存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+        return success
+    
+    def _cleanup_labeler(self, labeler):
+        """清理FrameLevelLabeler对象的所有资源"""
+        # 清理图像数据
+        if hasattr(labeler, 'frames'):
+            labeler.frames.clear()
+            labeler.frames = None
+        
+        # 清理matplotlib资源
+        if hasattr(labeler, 'fig'):
+            import matplotlib.pyplot as plt
+            plt.close(labeler.fig)
+            labeler.fig = None
+        
+        # 清理其他可能的大型对象
+        if hasattr(labeler, 'labels'):
+            labeler.labels = None
+        if hasattr(labeler, 'camera_keys'):
+            labeler.camera_keys = None
+        if hasattr(labeler, 'dataset'):
+            labeler.dataset = None
                 
-        except Exception as e:
-            print(f"❌ Episode {episode_idx} 标注失败: {e}")
-            return False
     
     def _extract_episode_data(self, episode_idx: int, online_dataset) -> List[Dict[str, Any]]:
-        """从内存中的数据集提取指定episode的数据"""
-        try:
-            # 优先直接从online_dataset提取数据（这是最可靠的方式）
-            print(f"   📊 尝试直接从online_dataset提取数据...")
-            if hasattr(online_dataset, '__len__') and len(online_dataset) > 0:
-                # 如果online_dataset有长度，尝试直接访问
-                episode_data = []
-                for frame_idx in range(len(online_dataset)):
-                    frame_data = online_dataset[frame_idx]
-                    if frame_data:
-                        episode_data.append(frame_data)
-                
-                if episode_data:
-                    print(f"   ✅ 直接从online_dataset提取成功: {len(episode_data)} 帧")
-                    # 调试：显示第一帧的详细结构
-                    if episode_data:
-                        first_frame = episode_data[0]
-                        print(f"   🔍 第一帧结构分析:")
-                        print(f"      所有键: {list(first_frame.keys())}")
-                        image_keys = [key for key in first_frame.keys() if "image" in key.lower()]
-                        print(f"      图像相关键: {image_keys}")
-                        for key in image_keys:
-                            value = first_frame[key]
-                            print(f"        {key}: type={type(value)}, shape={getattr(value, 'shape', 'N/A')}")
-                    return episode_data
+        """从内存中的数据集提取指定episode的数据 - 正确版本"""
+        print(f"   🔍 提取episode {episode_idx} 数据...")
+        
+        # 使用LeRobotDataset的正确方式获取数据（包括视频帧）
+        episode_data = []
+        
+        for frame_idx in range(len(online_dataset)):
+            # 使用LeRobotDataset的__getitem__，会自动加载视频帧
+            frame = online_dataset[frame_idx]
             
-            # 优先使用episode_data_index（如果存在）
-            if online_dataset.episode_data_index is not None:
-                print(f"   📊 使用episode_data_index提取数据...")
-                from_idx = online_dataset.episode_data_index["from"][episode_idx].item()
-                to_idx = online_dataset.episode_data_index["to"][episode_idx].item()
-                
-                print(f"   Episode {episode_idx}: frame {from_idx} 到 {to_idx}")
-                
-                # 使用LeRobotDataset的标准索引方式，这会自动处理图像加载
-                episode_data = []
-                for frame_idx in range(from_idx, to_idx):
-                    if frame_idx < len(online_dataset):
-                        # 使用标准索引方式，这会自动加载相机图像
-                        frame_data = online_dataset[frame_idx]
-                        episode_data.append(frame_data)
-                        print(f"     Frame {frame_idx}: 加载成功，包含键: {list(frame_data.keys())}")
-                
-                print(f"   ✅ 从episode_data_index成功提取 {len(episode_data)} 帧数据")
-                return episode_data
+            # 直接获取episode_index字段
+            ep_idx = frame['episode_index'].item()
             
-            # 如果episode_data_index不存在，尝试从hf_dataset直接访问
-            elif hasattr(online_dataset, 'hf_dataset') and online_dataset.hf_dataset is not None:
-                print(f"   📊 episode_data_index为None，尝试从hf_dataset直接提取数据...")
-                
-                # 从hf_dataset中查找指定episode的所有帧
-                episode_data = []
-                for frame_idx in range(len(online_dataset.hf_dataset)):
-                    frame = online_dataset.hf_dataset[frame_idx]
-                    if hasattr(frame, 'get'):
-                        episode_index = frame.get('episode_index', None)
-                        if episode_index is not None:
-                            if hasattr(episode_index, 'item'):
-                                ep_idx = episode_index.item()
-                            else:
-                                ep_idx = episode_index
-                            
-                            if ep_idx == episode_idx:
-                                episode_data.append(frame)
-                
-                if episode_data:
-                    print(f"   ✅ 从hf_dataset直接提取成功: {len(episode_data)} 帧")
-                    # 调试：显示第一帧的详细结构
-                    if episode_data:
-                        first_frame = episode_data[0]
-                        print(f"   🔍 第一帧结构分析:")
-                        print(f"      所有键: {list(first_frame.keys())}")
-                        image_keys = [key for key in first_frame.keys() if "image" in key.lower()]
-                        print(f"      图像相关键: {image_keys}")
-                        for key in image_keys:
-                            value = first_frame[key]
-                            print(f"        {key}: type={type(value)}, shape={getattr(value, 'shape', 'N/A')}")
-                    return episode_data
-                else:
-                    print(f"   ❌ 在hf_dataset中未找到episode {episode_idx} 的数据")
-            
-            # 最后才考虑episode_buffer（通常为空，因为已经save_episode了）
-            print(f"   ⚠️ 尝试从episode_buffer提取数据...")
-            
-            if hasattr(online_dataset, 'episode_buffer') and online_dataset.episode_buffer is not None:
-                # 检查episode_buffer中是否有数据
-                if online_dataset.episode_buffer.get("size", 0) > 0:
-                    print(f"   📊 从episode_buffer提取数据，大小: {online_dataset.episode_buffer['size']}")
-                    
-                    # 构建临时的episode数据
-                    episode_data = []
-                    for i in range(online_dataset.episode_buffer["size"]):
-                        frame_data = {}
-                        # 从episode_buffer中提取每个字段
-                        for key, value in online_dataset.episode_buffer.items():
-                            if key not in ["size", "task"] and isinstance(value, (list, np.ndarray)):
-                                if i < len(value):
-                                    frame_data[key] = value[i]
-                        
-                        if frame_data:  # 只添加非空的frame
-                            episode_data.append(frame_data)
-                    
-                    print(f"   ✅ 从episode_buffer成功提取 {len(episode_data)} 帧数据")
-                    return episode_data
-                else:
-                    print(f"   ❌ episode_buffer为空，无法提取数据")
-                    return []
-            else:
-                print(f"   ❌ episode_buffer不存在，无法提取数据")
-                return []
-            
-        except Exception as e:
-            print(f"   提取episode数据失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
+            if ep_idx == episode_idx:
+                episode_data.append(frame)
+        
+        print(f"   ✅ 提取到 {len(episode_data)} 帧数据")
+        return episode_data
     
     def _cache_episode_labels(self, episode_idx: int, labels: np.ndarray):
         """将episode的标注结果缓存到内存"""
@@ -408,12 +330,81 @@ class SimpleRewardModelIntegrator:
             cache_key = (episode_idx, frame_idx)
             # 将标签转换为reward值: 0=failure, 1=success, -1=ignore
             if label == -1:  # ignore
-                # ❌ 重要：ignore标签不应该进入内存缓存，应该被完全过滤掉
-                print(f"   ⚠️ Frame {frame_idx}: 标签 {label} (ignore)，跳过缓存")
+                # 重要：ignore标签不应该进入内存缓存，应该被完全过滤掉
                 continue  # 跳过这个帧，不进入缓存
             else:  # success (1) 或 failure (0)
                 reward = float(label)
                 self.labeled_rewards[cache_key] = reward
+        
+        # 应用reward smoothing
+        if self.reward_smoothing_enabled:
+            self._apply_reward_smoothing(episode_idx, labels)
+    
+    def _apply_reward_smoothing(self, episode_idx: int, labels: np.ndarray):
+        """应用reward smoothing，在reward=1的第一帧前添加平滑过渡"""
+        if not self.reward_smoothing_enabled:
+            return
+        
+        # 找到第一个success帧的位置
+        success_indices = np.where(labels == 1)[0]
+        if len(success_indices) == 0:
+            return
+        
+        first_success_idx = success_indices[0]
+        
+        # 计算smoothing的起始位置
+        smoothing_start = max(0, first_success_idx - self.smoothing_frames)
+        smoothing_end = first_success_idx
+        
+        # 生成smoothing reward值
+        if self.smoothing_type == "linear":
+            smoothing_rewards = self._generate_linear_smoothing(smoothing_start, smoothing_end)
+        elif self.smoothing_type == "exponential":
+            smoothing_rewards = self._generate_exponential_smoothing(smoothing_start, smoothing_end)
+        else:
+            smoothing_rewards = self._generate_linear_smoothing(smoothing_start, smoothing_end)
+        
+        # 应用smoothing reward
+        for i, reward in enumerate(smoothing_rewards):
+            frame_idx = smoothing_start + i
+            cache_key = (episode_idx, frame_idx)
+            
+            # 只更新非ignore的帧
+            if frame_idx < len(labels) and labels[frame_idx] != -1:
+                self.labeled_rewards[cache_key] = reward
+    
+    def _generate_linear_smoothing(self, start_idx: int, end_idx: int) -> List[float]:
+        """生成线性smoothing reward值"""
+        if start_idx >= end_idx:
+            return []
+        
+        num_frames = end_idx - start_idx
+        rewards = []
+        
+        for i in range(num_frames):
+            # 线性插值：从0到1
+            progress = i / num_frames
+            reward = progress
+            rewards.append(reward)
+        
+        return rewards
+    
+    def _generate_exponential_smoothing(self, start_idx: int, end_idx: int) -> List[float]:
+        """生成指数smoothing reward值"""
+        if start_idx >= end_idx:
+            return []
+        
+        num_frames = end_idx - start_idx
+        rewards = []
+        
+        for i in range(num_frames):
+            # 指数插值：从0到1，后期增长更快
+            progress = i / num_frames
+            # 使用sigmoid-like函数，在后期增长更快
+            reward = 1.0 / (1.0 + np.exp(-5.0 * (progress - 0.5)))
+            rewards.append(reward)
+        
+        return rewards
     
     def update_episode_rewards(self, episode_idx: int, online_dataset, labeled_dataset) -> bool:
         """
@@ -430,13 +421,9 @@ class SimpleRewardModelIntegrator:
         if not self.human_labeling_enabled:
             return False
         
-        print(f"🔄 更新episode {episode_idx} 的reward...")
-        
         # 获取episode的frame范围
         from_idx = labeled_dataset.episode_data_index["from"][episode_idx].item()
         to_idx = labeled_dataset.episode_data_index["to"][episode_idx].item()
-        
-        print(f"   Episode {episode_idx}: frame {from_idx} 到 {to_idx}")
         
         # 更新online_dataset中对应frame的reward
         for frame_idx in range(from_idx, to_idx):
@@ -453,7 +440,6 @@ class SimpleRewardModelIntegrator:
                     cache_key = (episode_idx, frame_idx - from_idx)  # episode内的frame索引
                     self.labeled_rewards[cache_key] = float(labeled_reward)
         
-        print(f"✅ Episode {episode_idx} reward更新完成")
         return True
     
     def load_labeled_dataset(self, output_repo_id: str):
@@ -492,7 +478,6 @@ class SimpleRewardModelIntegrator:
         if not self.human_labeling_enabled:
             return False
         
-        print(f"🎯 开始处理episode {episode_idx} 的标注流程...")
         
         # 步骤1: 启动episode标注
         success = self.add_episode_for_labeling(
@@ -503,37 +488,32 @@ class SimpleRewardModelIntegrator:
         )
         
         if not success:
-            print(f"❌ Episode {episode_idx} 标注失败，无法继续训练")
+            logger.error(f"Episode {episode_idx} 标注失败，无法继续训练")
             while True:
                 time.sleep(10)  # 每10秒检查一次
-        
-        print(f"✅ Episode {episode_idx} 标注完成，更新reward...")
         
         # 步骤2: 直接更新online_dataset中的reward（从内存缓存）
         success = self._update_episode_rewards_from_cache(episode_idx, online_dataset)
         
         if not success:
-            print(f"❌ Episode {episode_idx} reward更新失败")
+            logger.error(f"Episode {episode_idx} reward更新失败")
             while True:
                 time.sleep(10)  # 每10秒检查一次
         
-        print(f"✅ Episode {episode_idx} 整个标注流程完成")
         return True
     
     def _update_episode_rewards_from_cache(self, episode_idx: int, online_dataset) -> bool:
         """从内存缓存更新episode的reward"""
-        # 如果episode_data_index为None，手动计算它
-        if online_dataset.episode_data_index is None:
-            print(f"🔧 episode_data_index为None，手动计算...")
-            from lerobot.datasets.push_dataset_to_hub.utils import calculate_episode_data_index
-            
-            # 从hf_dataset计算episode_data_index
-            if hasattr(online_dataset, 'hf_dataset') and online_dataset.hf_dataset is not None:
-                episode_data_index = calculate_episode_data_index(online_dataset.hf_dataset)
-                online_dataset.episode_data_index = episode_data_index
-                print(f"✅ 手动计算episode_data_index完成: {len(episode_data_index['from'])} episodes")
-            else:
-                raise ValueError(f"无法计算episode_data_index：hf_dataset为空")
+        # 确保 episode_data_index 可用且覆盖到当前 episode
+        if (
+            online_dataset.episode_data_index is None
+            or len(online_dataset.episode_data_index.get('from', [])) < online_dataset.num_episodes
+        ):
+            from lerobot.datasets.utils import get_episode_data_index
+            online_dataset.episode_data_index = get_episode_data_index(
+                online_dataset.meta.episodes,
+                online_dataset.episodes,
+            )
         
         from_idx = online_dataset.episode_data_index["from"][episode_idx].item()
         to_idx = online_dataset.episode_data_index["to"][episode_idx].item()
@@ -549,9 +529,6 @@ class SimpleRewardModelIntegrator:
                 reward = self.labeled_rewards[cache_key]
                 online_dataset[frame_idx]["next.reward"] = np.array([reward], dtype=np.float32)
                 updated_count += 1
-        
-        print(f"✅ Episode {episode_idx} reward更新完成")
-        print(f"   更新帧数: {updated_count}")
         return True
     
     def is_available(self) -> bool:
@@ -560,26 +537,18 @@ class SimpleRewardModelIntegrator:
     
     def test_path_integration(self):
         """测试路径集成修复"""
-        print("🧪 测试路径集成修复...")
-        
         # 测试1: 检查标注脚本路径
-        print(f"1. 标注脚本路径: {type(self.labeling_script_path)} = {self.labeling_script_path}")
-        print(f"   路径是否存在: {os.path.exists(self.labeling_script_path)}")
+        if not os.path.exists(self.labeling_script_path):
+            return False
         
         # 测试2: 模拟PosixPath输入
         from pathlib import Path
         test_dataset_path = Path("outputs/train/test_dataset")
         test_output_id = "wzn12/test_output"
         
-        print(f"2. 测试数据集路径: {type(test_dataset_path)} = {test_dataset_path}")
-        print(f"   测试输出ID: {type(test_output_id)} = {test_output_id}")
-        
         # 测试3: 转换为字符串
         dataset_path_str = str(test_dataset_path)
         output_id_str = str(test_output_id)
-        
-        print(f"3. 转换后数据集路径: {type(dataset_path_str)} = {dataset_path_str}")
-        print(f"   转换后输出ID: {type(output_id_str)} = {output_id_str}")
         
         # 测试4: 构建命令（不实际执行）
         cmd = [
@@ -590,18 +559,9 @@ class SimpleRewardModelIntegrator:
             "--output_repo_id", output_id_str
         ]
         
-        print(f"4. 命令列表:")
-        for i, arg in enumerate(cmd):
-            print(f"   cmd[{i}]: {type(arg)} = {arg}")
-        
         # 测试5: 字符串拼接
-        try:
-            cmd_str = ' '.join(cmd)
-            print(f"5. 命令字符串拼接成功: {cmd_str}")
-        except Exception as e:
-            print(f"5. 命令字符串拼接失败: {e}")
+        cmd_str = ' '.join(cmd)
         
-        print("\n✅ 路径集成测试完成！")
         return True
 
 
@@ -613,9 +573,6 @@ def create_reward_model_integrator(config: Dict[str, Any]):
 
 def test_labeling_interface():
     """测试标注界面的完整流程"""
-    print("🧪 开始测试标注界面...")
-    print("=" * 60)
-    
     # 创建测试配置
     config = {
         "human_labeling": {
@@ -625,12 +582,9 @@ def test_labeling_interface():
     }
     
     # 创建集成器
-    print("1️⃣ 创建Reward Model集成器...")
     integrator = SimpleRewardModelIntegrator(config)
-    print("✅ 集成器创建成功")
     
     # 创建模拟的episode数据
-    print("2️⃣ 创建模拟episode数据...")
     import numpy as np
     
     # 模拟10帧数据，包含图像、动作等
@@ -650,10 +604,7 @@ def test_labeling_interface():
         }
         episode_data.append(frame_data)
     
-    print(f"✅ 创建了 {len(episode_data)} 帧模拟数据")
-    
     # 创建模拟的online_dataset对象
-    print("3️⃣ 创建模拟online_dataset对象...")
     class MockOnlineDataset:
         def __init__(self, episode_data):
             self.episode_data_index = None  # 模拟新创建的数据集
@@ -669,87 +620,37 @@ def test_labeling_interface():
             self.root = "/tmp/test_dataset"
     
     mock_dataset = MockOnlineDataset(episode_data)
-    print("✅ 模拟数据集创建成功")
     
     # 测试数据提取
-    print("4️⃣ 测试数据提取功能...")
     extracted_data = integrator._extract_episode_data(0, mock_dataset)
-    if extracted_data:
-        print(f"✅ 数据提取成功: {len(extracted_data)} 帧")
-        print(f"   第一帧包含字段: {list(extracted_data[0].keys())}")
-    else:
-        print("❌ 数据提取失败")
+    if not extracted_data:
         return False
     
     # 测试MemoryFrameLevelLabeler创建
-    print("5️⃣ 测试MemoryFrameLevelLabeler创建...")
-    try:
-        labeler = MemoryFrameLevelLabeler(extracted_data, 0)
-        print("✅ MemoryFrameLevelLabeler创建成功")
-        print(f"   相机键: {labeler.camera_keys}")
-        print(f"   帧数: {labeler.num_frames}")
-        print(f"   标签: {labeler.labels}")
-    except Exception as e:
-        print(f"❌ MemoryFrameLevelLabeler创建失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    labeler = MemoryFrameLevelLabeler(extracted_data, 0)
     
     # 测试标注界面启动
-    print("6️⃣ 测试标注界面启动...")
-    print("🎨 即将启动标注界面，请按照以下说明操作：")
-    print("   - 使用左右箭头键导航帧")
-    print("   - 按0标记为FAILURE (红色)")
-    print("   - 按1标记为SUCCESS (绿色)")
-    print("   - 按-标记为IGNORE (灰色)")
-    print("   - 点击Save按钮保存标注")
-    print("   - 关闭窗口完成测试")
-    print("")
-    print("🚀 启动标注界面...")
+    # 启动标注界面
+    result = labeler.show()
     
-    try:
-        # 启动标注界面
-        result = labeler.show()
+    # 检查结果
+    if result and 'saved' in result and result['saved']:
+        # 测试reward缓存
+        integrator._cache_episode_labels(0, result['labels'])
         
-        # 检查结果
-        if result and 'saved' in result and result['saved']:
-            print("✅ 标注界面测试成功！")
-            print(f"   保存的标签: {result['labels']}")
-            print(f"   标签统计:")
-            labels = result['labels']
-            success_count = np.sum(labels == 1)
-            failure_count = np.sum(labels == 0)
-            ignore_count = np.sum(labels == -1)
-            print(f"     SUCCESS: {success_count}")
-            print(f"     FAILURE: {failure_count}")
-            print(f"     IGNORE: {ignore_count}")
-            
-            # 测试reward缓存
-            print("7️⃣ 测试reward缓存功能...")
-            integrator._cache_episode_labels(0, result['labels'])
-            print("✅ Reward缓存成功")
-            
-            # 验证缓存
-            for i, label in enumerate(result['labels']):
-                expected_reward = 1.0 if label == 1 else 0.0
-                cached_reward = integrator._get_human_labeled_reward(0, i)
-                if cached_reward == expected_reward:
-                    print(f"   Frame {i}: 标签 {label} -> reward {cached_reward} ✅")
-                else:
-                    print(f"   Frame {i}: 标签 {label} -> reward {cached_reward} ❌")
-            
-            print("\n🎉 所有测试通过！标注界面工作正常！")
-            return True
-            
-        else:
-            print("❌ 标注界面测试失败：未保存标注结果")
-            return False
-            
-    except Exception as e:
-        print(f"❌ 标注界面启动失败: {e}")
-        import traceback
-        traceback.print_exc()
+        # 验证缓存
+        for i, label in enumerate(result['labels']):
+            expected_reward = 1.0 if label == 1 else 0.0
+            cached_reward = integrator._get_human_labeled_reward(0, i)
+            if cached_reward != expected_reward:
+                return False
+        
+        return True
+        
+    else:
         return False
+
+
 
 
 def main():
@@ -771,26 +672,16 @@ def main():
     args = parser.parse_args()
     
     if args.test_labeling:
-        print("🎯 启动标注界面测试...")
         success = test_labeling_interface()
-        if success:
-            print("\n✅ 标注界面测试完成！")
-            return 0
-        else:
-            print("\n❌ 标注界面测试失败！")
-            return 1
+        return 0 if success else 1
     
     elif args.test_paths:
-        print("🔍 启动路径集成测试...")
         config = {"human_labeling": {"enable": True}}
         integrator = SimpleRewardModelIntegrator(config)
         integrator.test_path_integration()
         return 0
     
     else:
-        print("使用方法:")
-        print("  python reward_model_integration.py --test_labeling    # 测试标注界面")
-        print("  python reward_model_integration.py --test_paths      # 测试路径集成")
         return 0
 
 

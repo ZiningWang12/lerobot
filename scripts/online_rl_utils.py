@@ -111,7 +111,7 @@ class OnlineDataCollector:
         
         self.obs_features = self.online_dataset.features
         
-    def collect_policy_data(self, episode: int, task_description: str) -> Tuple[float, int, Dict]:
+    def collect_policy_data(self, episode: int, task_description: str) -> Tuple[float, int, Dict, Dict]:
         """
         收集策略数据
         
@@ -119,6 +119,7 @@ class OnlineDataCollector:
             episode_reward: 总奖励
             episode_steps: 总步数
             final_observation: 最终观察状态
+            last_action: 最后一个策略动作（用于平滑过渡）
         """
         print(f"🎬 开始收集策略数据 - Episode {episode + 1}")
         
@@ -126,6 +127,7 @@ class OnlineDataCollector:
         observation = self.robot.get_observation()
         episode_reward = 0.0
         episode_steps = 0
+        last_action = None
         
         # 开始记录episode
         self.online_dataset.episode_buffer = self.online_dataset.create_episode_buffer(episode_index=episode)
@@ -168,9 +170,10 @@ class OnlineDataCollector:
             episode_reward += actual_reward
             episode_steps += 1
             observation = next_observation
+            last_action = sent_action  # 保存最后一个动作
         
         print(f"✅ 策略数据收集完成 - {episode_steps} 步")
-        return episode_reward, episode_steps, observation
+        return episode_reward, episode_steps, observation, last_action
     
     def _record_frame_data(self, observation: Dict, action: Dict, reward: float, 
                           next_observation: Dict, done: bool, episode: int, 
@@ -257,9 +260,17 @@ class TeleopDataAppender:
         self.obs_features = self.online_dataset.features
     
     def append_teleop_data(self, episode: int, initial_observation: Dict, 
-                          initial_reward: float, initial_step: int) -> int:
+                          initial_reward: float, initial_step: int, 
+                          last_policy_action: Dict = None) -> int:
         """
-        追加遥操作数据到当前episode
+        追加遥操作数据到当前episode，包含平滑过渡机制
+        
+        Args:
+            episode: episode编号
+            initial_observation: 初始观察状态
+            initial_reward: 初始奖励
+            initial_step: 初始步数
+            last_policy_action: 最后一个策略动作，用于平滑过渡
         
         Returns:
             total_teleop_steps: 遥操作总步数
@@ -269,19 +280,36 @@ class TeleopDataAppender:
         
         print(f"🎮 开始遥操作数据收集，时长: {self.config.training.teleop_append.duration_s}秒")
         
+        # 获取平滑过渡步数配置
+        smooth_steps = getattr(self.config.training.teleop_append, 'smooth_steps', 15)
+        
         # 复用record.py的遥操作循环逻辑
         teleop_start_time = time.perf_counter()
         teleop_steps = 0
         observation = initial_observation
         
+        # 获取初始遥操作动作
+        initial_teleop_action = self.teleop.get_action()
+        
         while time.perf_counter() - teleop_start_time < self.config.training.teleop_append.duration_s:
             start_loop_t = time.perf_counter()
             
-            # 获取遥操作动作
-            teleop_action = self.teleop.get_action()
+            # 获取当前遥操作动作
+            current_teleop_action = self.teleop.get_action()
+            
+            # 应用平滑过渡
+            if teleop_steps < smooth_steps and last_policy_action is not None:
+                # 计算平滑权重：从1.0（完全策略动作）过渡到0.0（完全遥操作动作）
+                smooth_weight = 1.0 - (teleop_steps / smooth_steps)
+                smoothed_action = self._smooth_action_transition(
+                    last_policy_action, current_teleop_action, smooth_weight
+                )
+                action_to_send = smoothed_action
+            else:
+                action_to_send = current_teleop_action
             
             # 发送动作到机器人
-            sent_teleop_action = self.robot.send_action(teleop_action)
+            sent_teleop_action = self.robot.send_action(action_to_send)
             next_observation = self.robot.get_observation()
             
             # 组织遥操作数据（与策略数据格式一致）
@@ -361,6 +389,33 @@ class TeleopDataAppender:
             next_frame=next_observation_frame,
             is_online=True
         )
+    
+    def _smooth_action_transition(self, policy_action: Dict, teleop_action: Dict, weight: float) -> Dict:
+        """
+        在策略动作和遥操作动作之间进行平滑过渡
+        
+        Args:
+            policy_action: 策略动作字典
+            teleop_action: 遥操作动作字典
+            weight: 平滑权重 (1.0=完全策略动作, 0.0=完全遥操作动作)
+        
+        Returns:
+            smoothed_action: 平滑后的动作字典
+        """
+        smoothed_action = {}
+        
+        for key in policy_action.keys():
+            if key in teleop_action:
+                # 线性插值：weight * policy + (1-weight) * teleop
+                policy_val = policy_action[key]
+                teleop_val = teleop_action[key]
+                smoothed_val = weight * policy_val + (1.0 - weight) * teleop_val
+                smoothed_action[key] = smoothed_val
+            else:
+                # 如果遥操作动作中没有对应的键，使用策略动作
+                smoothed_action[key] = policy_action[key]
+        
+        return smoothed_action
 
 
 class EpisodeManager:
@@ -385,7 +440,7 @@ class EpisodeManager:
         task_description = "Pick the black ring"
         
         # 1. 收集策略数据
-        episode_reward, episode_steps, final_observation = self.data_collector.collect_policy_data(
+        episode_reward, episode_steps, final_observation, last_policy_action = self.data_collector.collect_policy_data(
             episode=episode,
             task_description=task_description
         )
@@ -396,12 +451,25 @@ class EpisodeManager:
                 episode=episode,
                 initial_observation=final_observation,
                 initial_reward=episode_reward,
-                initial_step=episode_steps
+                initial_step=episode_steps,
+                last_policy_action=last_policy_action
             )
         
+        import psutil
+        import gc
+        mem_before = psutil.Process().memory_info().rss / 1024 / 1024
+        print(f"🔍 Episode {episode} 保存前: 内存{mem_before:.1f}MB")
         # 3. 保存episode数据
         self.online_dataset.save_episode()
-        print(f"✅ Episode {episode} 数据保存完成")
+        import datasets
+        for key in self.online_dataset.hf_dataset.features:
+            if isinstance(self.online_dataset.hf_dataset.features[key], datasets.Image):
+                del self.online_dataset.hf_dataset.data[key]
+        
+        # 🔍 内存监控：episode数据采集完成后
+        mem_after_collect = psutil.Process().memory_info().rss / 1024 / 1024
+        mem_increase_collect = mem_after_collect - mem_before
+        print(f"🔍 Episode {episode} 数据保存后: 内存{mem_after_collect:.1f}MB(+{mem_increase_collect:.1f}MB)")
         
         # 4. 返回episode统计信息
         return {
@@ -412,8 +480,7 @@ class EpisodeManager:
             'total_steps': episode_steps + teleop_steps,
             'final_observation': final_observation
         }
-
-
+        
 def create_data_collection_components(config: Dict[str, Any], robot, policy, teleop, 
                                     device, online_dataset, hybrid_buffer) -> Tuple[OnlineDataCollector, TeleopDataAppender, EpisodeManager]:
     """创建数据采集相关组件"""

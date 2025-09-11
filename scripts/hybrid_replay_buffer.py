@@ -112,8 +112,16 @@ class HybridReplayBuffer:
                 else:
                     tensor_value = torch.tensor(value)
                 
-                # 统一处理图像数据格式：确保所有图像都是 (C, H, W) 格式
+                # 统一处理图像数据格式：确保所有图像都是 (C, H, W) 格式且保持uint8
                 if key.endswith(".images") or "images" in key:
+                    # 🔧 关键修复：强制保持uint8格式，避免float32内存泄漏
+                    if tensor_value.dtype == torch.float32:
+                        # 如果已经是float32，转换回uint8 (假设范围是[0,1])
+                        tensor_value = (tensor_value * 255).clamp(0, 255).to(torch.uint8)
+                    elif tensor_value.dtype != torch.uint8:
+                        # 确保所有图像数据都是uint8
+                        tensor_value = tensor_value.to(torch.uint8)
+                    
                     # 检查图像维度并标准化
                     if tensor_value.dim() == 3:
                         if tensor_value.shape[0] == 3:  # 已经是 (C, H, W) 格式
@@ -186,8 +194,7 @@ class HybridReplayBuffer:
         Returns:
             加载的数据帧数量
         """
-        print(f"📚 开始加载离线数据到ReplayBuffer...")
-        print(f"   数据集: {dataset.repo_id}")
+        print(f"   数据集: {dataset.repo_id}， 总episodes: {dataset.num_episodes}， 总frames: {dataset.num_frames}")
         print(f"   总episodes: {dataset.num_episodes}")
         print(f"   总frames: {dataset.num_frames}")
         
@@ -300,6 +307,9 @@ class HybridReplayBuffer:
         # 合并batch
         mixed_batch = self._combine_batches(offline_batch, online_batch)
         
+        # 🔧 关键修复：预处理图像数据，将uint8转换为float32 [0,1]供训练使用
+        mixed_batch = self._preprocess_batch_images(mixed_batch)
+        
         # 采样信息
         sampling_info = {
             "stage": self.current_stage,
@@ -334,11 +344,46 @@ class HybridReplayBuffer:
                 elif isinstance(offline_batch[key], dict) and isinstance(online_batch[key], dict):
                     combined_batch[key] = {}
                     for sub_key in offline_batch[key].keys():
-                        combined_batch[key][sub_key] = torch.cat([offline_batch[key][sub_key], online_batch[key][sub_key]], dim=0)   
-        # 调试：检查输出数据
-        print(f"   合并后: action={len(combined_batch.get('action', []))}, state={len(combined_batch.get('state', {}).get('observation.state', [])) if combined_batch.get('state') else 0}")
-        
+                        combined_batch[key][sub_key] = torch.cat([offline_batch[key][sub_key], online_batch[key][sub_key]], dim=0)  
         return combined_batch
+    
+    def _preprocess_batch_images(self, batch: dict) -> dict:
+        """
+        预处理批次中的图像数据，将uint8 [0,255] 转换为 float32 [0,1]
+        这是训练前必需的步骤，因为SmolVLA期望输入范围是[0,1]
+        """
+        if not batch:
+            return batch
+            
+        processed_batch = batch.copy()
+        
+        # 处理state中的图像
+        if "state" in batch and isinstance(batch["state"], dict):
+            processed_batch["state"] = {}
+            for key, value in batch["state"].items():
+                if key.endswith(".images") or "images" in key:
+                    # 将uint8 [0,255] 转换为 float32 [0,1]
+                    if value.dtype == torch.uint8:
+                        processed_batch["state"][key] = value.float() / 255.0
+                    else:
+                        processed_batch["state"][key] = value
+                else:
+                    processed_batch["state"][key] = value
+        
+        # 处理next_state中的图像
+        if "next_state" in batch and isinstance(batch["next_state"], dict):
+            processed_batch["next_state"] = {}
+            for key, value in batch["next_state"].items():
+                if key.endswith(".images") or "images" in key:
+                    # 将uint8 [0,255] 转换为 float32 [0,1]
+                    if value.dtype == torch.uint8:
+                        processed_batch["next_state"][key] = value.float() / 255.0
+                    else:
+                        processed_batch["next_state"][key] = value
+                else:
+                    processed_batch["next_state"][key] = value
+        
+        return processed_batch
     
     def get_buffer_stats(self) -> Dict[str, Any]:
         """获取缓冲区统计信息"""
@@ -372,7 +417,6 @@ class HybridReplayBuffer:
             "episode_count": self.episode_count,
             "current_stage": self.current_stage,
             "stage_transitions": self.stage_transitions,
-            "device": self.device,
             "offline_buffer_size": len(self.offline_buffer),
             "online_buffer_size": len(self.online_buffer)
         }

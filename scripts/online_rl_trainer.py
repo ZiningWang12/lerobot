@@ -28,6 +28,41 @@ def create_lerobot_compatible_config(config_dict: Dict[str, Any]) -> EasyDict:
     return EasyDict(config_dict)
 
 
+def save_policy_bundle(save_path: str, policy):
+    """以与加载逻辑兼容且简洁的方式保存策略：
+    - 保存 actor 为 HF 目录（SmolVLAPolicy.from_pretrained 可直接加载）
+    - 保存 critic_state_dict 到独立文件（critic_init_state_path 可加载）
+    - 写入 resume_overrides.json 便于直接复现加载配置
+    """
+    os.makedirs(save_path, exist_ok=True)
+
+    # 保存 actor（SmolVLA）为 HF 目录
+    actor_save_dir = os.path.join(save_path, "actor")
+    os.makedirs(actor_save_dir, exist_ok=True)
+    policy.smolvla.save_pretrained(actor_save_dir)
+
+    # 保存 critic 状态
+    critic_state = {
+        'critic_state_dict': policy.critic.state_dict(),
+    }
+    torch.save(critic_state, os.path.join(save_path, 'critic_state.pth'))
+
+    # resume 覆盖配置
+    resume_overrides = {
+        'policy': {
+            'pretrained_path': actor_save_dir,
+            'critic_init_state_path': os.path.join(save_path, 'critic_state.pth'),
+        }
+    }
+    with open(os.path.join(save_path, 'resume_overrides.json'), 'w') as f:
+        json.dump(resume_overrides, f, indent=2)
+
+    return {
+        'actor_dir': actor_save_dir,
+        'critic_state': os.path.join(save_path, 'critic_state.pth'),
+        'resume_overrides': os.path.join(save_path, 'resume_overrides.json'),
+    }
+
 def setup_torch_dynamo(config: EasyDict) -> None:
     """根据配置设置TorchDynamo"""
     if hasattr(config, 'torch_dynamo') and config.torch_dynamo.disable:
@@ -133,8 +168,6 @@ def run_comprehensive_test(config: Dict[str, Any]) -> bool:
 
 def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
     """渐进式混合强化学习训练主函数"""
-    print("🚀 开始渐进式混合强化学习训练...")
-    
     # 初始化性能监控器 - 直接使用critic_warmup.py中的实现
     monitor = PerformanceMonitor()
     
@@ -192,32 +225,25 @@ def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
     )
     
     # 调试：检查策略配置
-    print(f"🔍 策略类型: {type(policy)}")
     print(f"🔍 策略配置: {policy.config}")
     print(f"🔍 n_action_steps: {getattr(policy.config, 'n_action_steps', 'N/A')}")
     print(f"🔍 chunk_size: {getattr(policy.config, 'chunk_size', 'N/A')}")
     
     policy = policy.to(device)
     policy.train()
-    print("✅ 策略网络创建成功")
     
     # 创建Reward Model集成器
     print("🎯 创建Reward Model集成器...")
     reward_integrator = create_reward_model_integrator(config.env.reward_model)
-    print("✅ Reward Model集成器创建成功")
     
     # 创建混合ReplayBuffer
-    print("📦 创建混合ReplayBuffer...")
     hybrid_buffer = create_hybrid_replay_buffer({
         "offline_capacity": config.replay_buffer.offline_capacity,
         "online_capacity": config.replay_buffer.online_capacity,
         "device": device
     })
     
-    # 加载离线数据到offline buffer
     print("📚 加载离线数据到ReplayBuffer...")
-    
-    # 加载离线数据到offline buffer
     offline_data_count = hybrid_buffer.load_offline_data(
         dataset=offline_dataset,
         max_episodes=config.replay_buffer.max_offline_episodes
@@ -240,17 +266,12 @@ def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
             )
         
         hybrid_buffer.set_mixing_stages(mixing_stages)
-        print("✅ 渐进式混合阶段配置完成")
     
     print(f"✅ 混合ReplayBuffer创建成功，离线容量: {config.replay_buffer.offline_capacity}, 在线容量: {config.replay_buffer.online_capacity}")
     
     # 创建online数据集用于记录
     print("📊 创建online数据集...")
     online_dataset = create_online_dataset(config, robot)
-    print("✅ Online数据集创建成功")
-    
-    # 创建数据采集组件
-    print("🔧 创建数据采集组件...")
     data_collector, teleop_appender, episode_manager = create_data_collection_components(
         config=config,
         robot=robot,
@@ -266,9 +287,25 @@ def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
     if config.visualization.enable:
         print("🎨 初始化Rerun可视化...")
         _init_rerun(session_name="progressive_hybrid_rl")
+    # 检查SmolVLA参数是否可训练
+    print("🔍 检查SmolVLA参数状态...")
+    total_params = sum(p.numel() for p in policy.parameters())
+    trainable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+    smolvla_params = sum(p.numel() for p in policy.smolvla.parameters())
+    smolvla_trainable = sum(p.numel() for p in policy.smolvla.parameters() if p.requires_grad)
     
-    # 创建优化器
-    print("⚙️ 创建优化器...")
+    print(f"   总参数数量: {total_params:,}")
+    print(f"   可训练参数数量: {trainable_params:,}")
+    print(f"   SmolVLA总参数: {smolvla_params:,}")
+    print(f"   SmolVLA可训练参数: {smolvla_trainable:,}")
+    print(f"   SmolVLA训练比例: {smolvla_trainable/smolvla_params*100:.1f}%")
+    
+    # 记录初始SmolVLA参数（用于后续比较）
+    initial_smolvla_params = {}
+    for name, param in policy.smolvla.named_parameters():
+        if param.requires_grad:
+            initial_smolvla_params[name] = param.data.clone()
+    
     optimizer = torch.optim.Adam(
         policy.parameters(),
         lr=config.optimizer.lr,
@@ -293,8 +330,18 @@ def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
     
     # 主训练循环 - 基于episode的渐进式混合训练
     for episode in range(config.training.total_episodes):
+        import psutil
+        import gc
+        mem_before = psutil.Process().memory_info().rss / 1024 / 1024
+        print(f"🔍 Episode {episode} 开始前: 内存{mem_before:.1f}MB")
+        
         # 使用EpisodeManager运行完整的episode
         episode_stats = episode_manager.run_episode(episode)
+        
+        # 🔍 内存监控：episode数据采集完成后
+        mem_after_collect = psutil.Process().memory_info().rss / 1024 / 1024
+        mem_increase_collect = mem_after_collect - mem_before
+        print(f"🔍 Episode {episode} 数据采集后: 内存{mem_after_collect:.1f}MB(+{mem_increase_collect:.1f}MB)")
         
         episode_reward = episode_stats['episode_reward']
         episode_steps = episode_stats['total_steps']
@@ -312,25 +359,17 @@ def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
             
             if not success:
                 continue  # 跳过这个episode
-        
-        # Episode结束后进行训练 - 这才是正确的RL训练模式
-        print(f"🎬 Episode {episode + 1} 数据收集完成，开始训练...")
 
         # 检查是否有足够的数据进行训练
         if (len(hybrid_buffer.online_buffer) >= config.replay_buffer.min_samples_for_training and 
             episode >= config.training.learning_starts):
-            
-            print(f"   🧠 开始训练，在线数据: {len(hybrid_buffer.online_buffer)}")
             
             # 计算本episode需要进行的训练步数
             # 使用UTD ratio：每个episode进行多次训练更新
             utd_ratio = config.training.utd_ratio
             training_steps = max(1, episode_steps // config.training.train_freq)
             
-            print(f"   🔄 训练配置: UTD ratio={utd_ratio}, 训练步数={training_steps}")
-            
             for train_step in range(training_steps):
-                print(f"      📚 训练步骤 {train_step + 1}/{training_steps}")
                 # 前utd_ratio-1次更新
                 for update_idx in range(utd_ratio - 1):
                     # 混合采样经验批次
@@ -378,8 +417,6 @@ def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
                     optimizer.step()
                     
                     training_losses.append(loss_critic.item())
-                    
-                    print(f"         🔧 Critic更新 {update_idx + 1}/{utd_ratio - 1}, 损失: {loss_critic.item():.4f}")
                 
                 # 最后一次更新 (第utd_ratio次) - 完整更新
                 batch, sampling_info = hybrid_buffer.sample_mixed(config.training.batch_size, episode)
@@ -438,23 +475,26 @@ def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
                 
                 training_losses.append(total_loss.item())
                 
-                print(f"         🎯 完整更新，总损失: {total_loss.item():.4f}")
-                print(f"            Critic: {loss_critic.item():.4f}, Actor: {loss_actor.item():.4f}, Temp: {loss_temperature.item():.4f}")
+                # 检查SmolVLA参数是否真的更新了（每10步检查一次）
+                if train_step % 10 == 0:
+                    param_changes = []
+                    for name, param in policy.smolvla.named_parameters():
+                        if param.requires_grad and name in initial_smolvla_params:
+                            change = torch.norm(param.data - initial_smolvla_params[name]).item()
+                            param_changes.append(change)
+                    
+                    if param_changes:
+                        avg_change = sum(param_changes) / len(param_changes)
+                        max_change = max(param_changes)
+                        print(f"   🔍 SmolVLA参数变化 - 平均: {avg_change:.6f}, 最大: {max_change:.6f}")
+                    else:
+                        print(f"   ⚠️ SmolVLA参数未检测到变化！")
                 
+                print(f"训练步骤 {train_step + 1}/{training_steps},总损失: {total_loss.item():.4f}，Critic: {loss_critic.item():.4f}, Actor: {loss_actor.item():.4f}, Temp: {loss_temperature.item():.4f}")
                 #monitor.end_training()
-                
                 # 更新目标网络 (每次UTD循环后)
                 policy.update_target_networks()
                 
-                # 记录训练指标 - 使用reward作为数据质量指标
-                if len(training_losses) > 0:
-                    avg_loss = np.mean(training_losses[-utd_ratio:])  # 最近utd_ratio次的平均损失
-                    
-                    # 显示UTD ratio训练信息
-                    print(f"         🔄 UTD Ratio训练: {utd_ratio}次更新/批次")
-                    print(f"            Critic更新: {utd_ratio-1}次, 完整更新: 1次")
-                    print(f"            平均损失: {avg_loss:.4f}")
-                    print(f"            总损失: {total_loss.item():.4f}")
         else:
             print(f"   ⏳ 跳过训练: 在线数据不足({len(hybrid_buffer.online_buffer)} < {config.replay_buffer.min_samples_for_training}) 或未达到学习开始条件(episode {episode} < {config.training.learning_starts})")
         
@@ -469,54 +509,45 @@ def train_progressive_hybrid_rl(config: Dict[str, Any]) -> bool:
         
         # 显示episode统计
         print(f"🎬 Episode {episode + 1} 完成")
-        print(f"   总奖励: {episode_reward:.4f}")
-        print(f"   总步数: {episode_steps}")
+        print(f"   总奖励: {episode_reward:.4f}, 总步数: {episode_steps}")
         
         # 显示缓冲区统计
         buffer_stats = hybrid_buffer.get_buffer_stats()
-        print(f"   当前阶段: {buffer_stats['current_stage']}")
-        print(f"   离线数据: {buffer_stats['offline_buffer']['size']}/{buffer_stats['offline_buffer']['capacity']}")
-        print(f"   在线数据: {buffer_stats['online_buffer']['size']}/{buffer_stats['online_buffer']['capacity']}")
+        print(f"   当前阶段: {buffer_stats['current_stage']},离线数据: {buffer_stats['offline_buffer']['size']}/{buffer_stats['offline_buffer']['capacity']},在线数据: {buffer_stats['online_buffer']['size']}/{buffer_stats['online_buffer']['capacity']}")
         
         # 保存检查点
         if (episode + 1) % config.logging.save_freq == 0:
             save_path = os.path.join(config.output_dir, f"checkpoint_episode_{episode+1}")
-            os.makedirs(save_path, exist_ok=True)
-            
-            checkpoint_data = {
-                'policy_state_dict': policy.state_dict(),
-                'config': config,
-                'episode': episode + 1,
-                'episode_rewards': episode_rewards,
-                'training_losses': training_losses,
-                'stage_transitions': stage_transitions,
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict()
-            }
-            torch.save(checkpoint_data, os.path.join(save_path, "checkpoint.pth"))
-            
+            save_policy_bundle(save_path=save_path, policy=policy)
             # 保存缓冲区状态
             hybrid_buffer.save_buffer_state(save_path)
-            
-            print(f"   💾 保存检查点 episode_{episode+1}")
         
         # 性能监控 - 使用critic_warmup.py中的方法
         #if (episode + 1) % 5 == 0:
         #    monitor.print_performance_summary()
     
+    # 检查最终SmolVLA参数变化
+    print("🔍 检查最终SmolVLA参数变化...")
+    final_param_changes = []
+    for name, param in policy.smolvla.named_parameters():
+        if param.requires_grad and name in initial_smolvla_params:
+            change = torch.norm(param.data - initial_smolvla_params[name]).item()
+            final_param_changes.append((name, change))
+    
+    if final_param_changes:
+        final_param_changes.sort(key=lambda x: x[1], reverse=True)
+        print(f"   SmolVLA参数变化统计:")
+        print(f"   平均变化: {sum(c[1] for c in final_param_changes)/len(final_param_changes):.6f}")
+        print(f"   最大变化: {final_param_changes[0][1]:.6f} ({final_param_changes[0][0]})")
+        print(f"   最小变化: {final_param_changes[-1][1]:.6f} ({final_param_changes[-1][0]})")
+        print(f"   有变化的参数: {len([c for c in final_param_changes if c[1] > 1e-8])}/{len(final_param_changes)}")
+    else:
+        print("   ⚠️ SmolVLA参数完全没有变化！")
+    
     # 保存最终模型
     final_save_path = os.path.join(config.output_dir, "final_model")
     os.makedirs(final_save_path, exist_ok=True)
-    
-    final_checkpoint_data = {
-        'policy_state_dict': policy.state_dict(),
-        'config': config,
-        'episode': config.training.total_episodes,
-        'final_episode_rewards': episode_rewards,
-        'training_losses': training_losses,
-        'stage_transitions': stage_transitions
-    }
-    torch.save(final_checkpoint_data, os.path.join(final_save_path, "final_model.pth"))
+    save_policy_bundle(save_path=final_save_path, policy=policy)
     
     # 保存缓冲区状态
     hybrid_buffer.save_buffer_state(final_save_path)

@@ -435,7 +435,6 @@ class FrameLevelLabeler:
             return
         
         self.next_episode_requested = True
-        print(f"✅ Moving to next episode...")
         plt.close(self.fig)  # Close current window
     def update_display(self):
         """Update all displays."""
@@ -456,6 +455,7 @@ class FrameLevelLabeler:
         }
     
     def show(self):
+        '''
         """Show the labeling interface."""
         print("\n" + "="*60)
         print("FRAME LABELING INSTRUCTIONS:")
@@ -492,6 +492,7 @@ class FrameLevelLabeler:
         print("")
         print("Close window when done labeling (or use Next Episode button)")
         print("="*60 + "\n")
+        '''
         
         plt.show()
         return self.get_result()

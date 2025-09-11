@@ -139,18 +139,26 @@ class ReplayBuffer:
         state_shapes = {key: val.squeeze(0).shape for key, val in state.items()}
         action_shape = action.squeeze(0).shape
 
-        # Pre-allocate tensors for storage
+        # Pre-allocate tensors for storage using input dtypes to avoid unnecessary upcasting
         self.states = {
-            key: torch.empty((self.capacity, *shape), device=self.storage_device)
+            key: torch.empty(
+                (self.capacity, *shape),
+                dtype=state[key].dtype,  # preserve dtype (e.g., uint8 for images)
+                device=self.storage_device,
+            )
             for key, shape in state_shapes.items()
         }
-        self.actions = torch.empty((self.capacity, *action_shape), device=self.storage_device)
-        self.rewards = torch.empty((self.capacity,), device=self.storage_device)
+        self.actions = torch.empty(
+            (self.capacity, *action_shape), dtype=action.dtype, device=self.storage_device
+        )
+        self.rewards = torch.empty((self.capacity,), dtype=torch.float32, device=self.storage_device)
 
         if not self.optimize_memory:
             # Standard approach: store states and next_states separately
             self.next_states = {
-                key: torch.empty((self.capacity, *shape), device=self.storage_device)
+                key: torch.empty(
+                    (self.capacity, *shape), dtype=state[key].dtype, device=self.storage_device
+                )
                 for key, shape in state_shapes.items()
             }
         else:

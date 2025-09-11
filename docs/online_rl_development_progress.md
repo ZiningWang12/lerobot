@@ -454,6 +454,95 @@ policy = SmolVLASACPolicy.from_pretrained(
 
 **测试状态**: ✅ 策略加载完成，训练开始执行
 
+### Reward Smoothing功能实现 ✅
+
+**问题发现**: 2025-01-XX，在人工标注reward系统中，reward只有一次0到1的跳变，这种sparse reward会让模型很难学习。
+
+**根本原因**: 
+1. **Sparse Reward问题**: 人工标注的标签是二元的（0=failure, 1=success），直接转换为reward
+2. **学习困难**: 模型很难从sparse reward中学习到有效的策略
+3. **训练不稳定**: 缺乏中间reward信号，导致训练收敛困难
+
+**解决方案**: 实现Reward Smoothing功能，在reward=1的第一帧前添加平滑过渡
+
+**核心实现**:
+```python
+class SimpleRewardModelIntegrator:
+    def __init__(self, config):
+        # Reward smoothing配置
+        self.reward_smoothing_enabled = config.get("reward_smoothing", {}).get("enable", True)
+        self.smoothing_frames = config.get("reward_smoothing", {}).get("frames", 20)
+        self.smoothing_type = config.get("reward_smoothing", {}).get("type", "linear")
+    
+    def _apply_reward_smoothing(self, episode_idx: int, labels: np.ndarray):
+        """应用reward smoothing，在reward=1的第一帧前添加平滑过渡"""
+        # 找到第一个success帧的位置
+        success_indices = np.where(labels == 1)[0]
+        first_success_idx = success_indices[0]
+        
+        # 计算smoothing的起始位置
+        smoothing_start = max(0, first_success_idx - self.smoothing_frames)
+        smoothing_end = first_success_idx
+        
+        # 生成smoothing reward值
+        if self.smoothing_type == "linear":
+            smoothing_rewards = self._generate_linear_smoothing(smoothing_start, smoothing_end)
+        elif self.smoothing_type == "exponential":
+            smoothing_rewards = self._generate_exponential_smoothing(smoothing_start, smoothing_end)
+        
+        # 应用smoothing reward
+        for i, reward in enumerate(smoothing_rewards):
+            frame_idx = smoothing_start + i
+            cache_key = (episode_idx, frame_idx)
+            self.labeled_rewards[cache_key] = reward
+```
+
+**Smoothing策略**:
+1. **Linear Smoothing**: 线性插值，从0到1均匀增长
+   ```python
+   reward = i / num_frames  # 线性增长
+   ```
+
+2. **Exponential Smoothing**: 指数插值，后期增长更快
+   ```python
+   reward = 1.0 / (1.0 + np.exp(-5.0 * (progress - 0.5)))  # Sigmoid-like函数
+   ```
+
+**配置示例**:
+```json
+{
+  "reward_smoothing": {
+    "enable": true,
+    "frames": 20,
+    "type": "linear"
+  }
+}
+```
+
+**效果验证**:
+- ✅ **Linear Smoothing**: 20帧内从0.0平滑过渡到1.0
+- ✅ **Exponential Smoothing**: 使用sigmoid函数，后期增长更快
+- ✅ **边界处理**: 正确处理episode开始和结束的边界情况
+- ✅ **Ignore标签**: 自动跳过ignore标签（-1），不参与smoothing
+
+**可视化效果**:
+```mermaid
+graph LR
+    A[原始标签: 0,0,0,1,0] --> B[Linear Smoothing: 0,0.05,0.1,1,0]
+    A --> C[Exponential Smoothing: 0,0.076,0.119,1,0]
+    
+    B --> D[训练友好]
+    C --> E[后期增长更快]
+```
+
+**优势分析**:
+1. **学习信号丰富**: 提供连续的reward信号，模型更容易学习
+2. **训练稳定**: 减少sparse reward带来的训练不稳定
+3. **收敛更快**: 中间reward提供更好的梯度信息
+4. **可配置**: 支持不同的smoothing策略和帧数
+
+**测试状态**: ✅ 功能实现完成，测试通过，可视化验证成功
+
 ## 当前状态
 
 ### ✅ 已完成
@@ -463,6 +552,7 @@ policy = SmolVLASACPolicy.from_pretrained(
 - **代码重构**: 模块化数据采集、主循环简化、职责分离
 - **配置系统**: 完整的参数管理和渐进式混合配置
 - **算法集成**: UTD Ratio机制、可视化系统LeRobot兼容性
+- **Reward Smoothing**: 人工标注reward平滑化，解决sparse reward问题
 
 ### ⏳ 进行中
 - 系统整体功能验证

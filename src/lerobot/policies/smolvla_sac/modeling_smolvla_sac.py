@@ -27,6 +27,7 @@ from torch import Tensor
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.normalize import Normalize, Unnormalize
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.smolvla_sac.configuration_smolvla_sac import SmolVLASACConfig
 from lerobot.configs.types import PolicyFeature, FeatureType, NormalizationMode
 from lerobot.policies.sac.modeling_sac import (
@@ -146,6 +147,8 @@ class SmolVLAActorWrapper(nn.Module):
             'std': None
         }
     
+    # TODO: The actor forward is NOT compatible with the SAC framework, and needs a thorough rework.
+    # The current implementation is a hack to make it work, and is not usable.
     def forward(
         self,
         observations: dict[str, Tensor],
@@ -157,39 +160,35 @@ class SmolVLAActorWrapper(nn.Module):
         Returns:
             tuple: (actions, log_probs, means)
             
-        Note: Since SmolVLA is a diffusion policy, we:
-        1. Use _get_action_chunk() for action generation
-        2. Approximate log_probs using action statistics
-        3. Return means as actions (since diffusion doesn't provide explicit means)
+        Note: We use the diffusion policy approach where we:
+        1. Generate actions using SmolVLA's inference method
+        2. Compute log_probs using the diffusion process
+        3. Allow gradients to flow back through the denoising process
         """
-        # Use SmolVLA's inference method, not training method
-        with torch.no_grad():
-            # Prepare batch for SmolVLA - use original observation format
-            batch = self._prepare_batch_for_smolvla(observations)
-            
-            # Sample actions using diffusion denoising
-            # Use _get_action_chunk which internally calls self.model.sample_actions
-            actions = self.smolvla._get_action_chunk(batch)
-            
-            # Unpad actions to get final action dimension
-            original_action_dim = self.smolvla.config.action_feature.shape[0]
-            actions = actions[:, :, :original_action_dim]
-            
-            # Unnormalize actions
-            actions = self.smolvla.unnormalize_outputs({ACTION: actions})[ACTION]
-            
-            # For SAC, we need single actions, not action chunks
-            # Take the first action from the chunk
-            actions = actions[:, 0, :]  # Shape: (batch_size, action_dim)
-            
-            # Approximate log_probs for SAC entropy regularization
-            # Since diffusion doesn't provide explicit log_probs, we use a simple approximation
-            log_probs = self._approximate_log_probs(actions)
-            
-            # For means, we use the actions themselves
-            means = actions
-            
-            return actions, log_probs, means
+        # Prepare batch for SmolVLA
+        batch = self._prepare_batch_for_smolvla(observations)
+        
+        # Generate actions using SmolVLA's inference method
+        # This is the key: we need to use the inference method but allow gradients
+        actions_chunk = self.smolvla._get_action_chunk(batch)
+        
+        # Unpad actions to get final action dimension
+        original_action_dim = self.smolvla.config.output_features["action"].shape[0]
+        actions_chunk = actions_chunk[:, :, :original_action_dim]
+        
+        # Unnormalize actions
+        actions_chunk = self.smolvla.unnormalize_outputs({ACTION: actions_chunk})[ACTION]
+        
+        # For SAC, we need single actions, not action chunks
+        actions = actions_chunk[:, 0, :]  # Shape: (batch_size, action_dim)
+        
+        # Approximate log_probs for SAC entropy regularization
+        log_probs = self._approximate_log_probs(actions)
+        
+        # For means, we use the actions themselves
+        means = actions
+        
+        return actions, log_probs, means
     
     def _prepare_batch_for_smolvla(self, observations: dict[str, Tensor]) -> dict[str, Tensor]:
         """Prepare observations for SmolVLA processing"""
@@ -471,6 +470,22 @@ class SmolVLASACPolicy(PreTrainedPolicy):
             **kwargs
         )
         
+        # Override config with our settings for RL training
+        smolvla_policy.config.train_expert_only = False  # Enable VLM training
+        smolvla_policy.config.freeze_vision_encoder = False  # Enable vision encoder training
+        
+        # Update the model's internal config and re-initialize
+        smolvla_policy.model.vlm_with_expert.train_expert_only = False
+        smolvla_policy.model.vlm_with_expert.freeze_vision_encoder = False
+        smolvla_policy.model.vlm_with_expert.set_requires_grad()
+        
+        # Debug: Check if parameters are now trainable
+        trainable_params = sum(p.numel() for p in smolvla_policy.model.vlm_with_expert.parameters() if p.requires_grad)
+        print(f"Debug: VLM with expert trainable parameters: {trainable_params}")
+        
+        # Also ensure the model is in training mode
+        smolvla_policy.model.vlm_with_expert.train()
+        
         # Create new config if not provided
         if config is None:
             config = SmolVLASACConfig()
@@ -568,12 +583,6 @@ class SmolVLASACPolicy(PreTrainedPolicy):
             critic_losses.append(loss)
         
         total_loss = torch.stack(critic_losses).mean()
-        
-        # Debug: Print loss statistics
-        if torch.rand(1).item() < 0.01:  # Only print 1% of the time
-            print(f"🔍 Loss Debug Info:")
-            print(f"   Individual critic losses: {[l.item() for l in critic_losses]}")
-            print(f"   Total loss: {total_loss.item():.4f}")
         
         return total_loss
     
